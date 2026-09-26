@@ -1,0 +1,22 @@
+{
+  "name": "orchestrate",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Evidence-backed AI engineering orchestration system",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "test": "vitest run"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}
