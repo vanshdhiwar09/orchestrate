@@ -5,9 +5,10 @@ import type {
   ModelRequest,
   ModelResponse,
 } from '@orchestrate/model';
-import type { Workspace } from '@orchestrate/workspace';
+import type { CommandExecutor, ExecuteCommandOptions, ExecuteCommandResult, Workspace } from '@orchestrate/workspace';
 import { AgentRunner } from '../src/runner.js';
 import { createDefaultToolRegistry, ToolRegistry } from '../src/tools.js';
+
 
 class FakeWorkspace implements Workspace {
   private files = new Map<string, string>();
@@ -65,7 +66,28 @@ class FakeModelClient implements ModelClient {
   }
 }
 
+class FakeCommandExecutor implements CommandExecutor {
+  public calls: Array<{ command: string; args: string[]; options?: ExecuteCommandOptions }> = [];
+  public nextResult: ExecuteCommandResult = {
+    exitCode: 0,
+    signal: null,
+    stdout: '',
+    stderr: '',
+    timedOut: false,
+  };
+
+  async execute(
+    command: string,
+    args: string[],
+    options?: ExecuteCommandOptions
+  ): Promise<ExecuteCommandResult> {
+    this.calls.push({ command, args, options });
+    return { ...this.nextResult };
+  }
+}
+
 describe('AgentRunner', () => {
+
   it('throws error when instantiated without ModelClient', () => {
     expect(() => new AgentRunner({} as any)).toThrowError(
       'AgentRunner requires a valid ModelClient instance.'
@@ -490,5 +512,80 @@ describe('AgentRunner', () => {
     await expect(runner.run({ task: 'Loop forever' })).rejects.toThrowError(
       'AgentRunner reached maximum loop iterations (2) without reaching a final response.'
     );
+  });
+
+  it('13. AgentRunner executes execute_command via ToolRegistry using FakeCommandExecutor', async () => {
+    const fakeExecutor = new FakeCommandExecutor();
+    fakeExecutor.nextResult = {
+      exitCode: 0,
+      signal: null,
+      stdout: 'Tests passed',
+      stderr: '',
+      timedOut: false,
+    };
+
+    const registry = createDefaultToolRegistry({ executor: fakeExecutor });
+
+    const toolCallResponse: ModelResponse = {
+      id: 'exec-step-1',
+      model: 'nebius-model',
+      finishReason: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: null,
+        toolCalls: [
+          {
+            id: 'call_exec_1',
+            name: 'execute_command',
+            arguments: { command: 'npm', args: ['test'], cwd: undefined },
+          },
+        ],
+      },
+    };
+
+    const finalResponse: ModelResponse = {
+      id: 'exec-step-2',
+      model: 'nebius-model',
+      finishReason: 'stop',
+      message: {
+        role: 'assistant',
+        content: 'Tests ran successfully.',
+      },
+    };
+
+    const fakeClient = new FakeModelClient([toolCallResponse, finalResponse]);
+    const runner = new AgentRunner({
+      modelClient: fakeClient,
+      defaultModel: 'nebius-model',
+      toolRegistry: registry,
+    });
+
+    const result = await runner.run({ task: 'Run the test suite' });
+
+    expect(result.iterations).toBe(2);
+    expect(result.response.message.content).toBe('Tests ran successfully.');
+
+    // Verify the tool was called with correct command
+    expect(fakeExecutor.calls).toHaveLength(1);
+    expect(fakeExecutor.calls[0].command).toBe('npm');
+    expect(fakeExecutor.calls[0].args).toEqual(['test']);
+
+    // Verify the tool result was fed back into conversation
+    expect(result.messages[2]).toEqual({
+      role: 'tool',
+      name: 'execute_command',
+      toolCallId: 'call_exec_1',
+      content: JSON.stringify({
+        exitCode: 0,
+        signal: null,
+        stdout: 'Tests passed',
+        stderr: '',
+        timedOut: false,
+      }),
+    });
+
+    // AgentRunner itself should not know anything about processes:
+    // it simply passes tool input and output through the ToolRegistry.
+    expect(fakeClient.requests.length).toBe(2);
   });
 });

@@ -1,5 +1,5 @@
 import type { ToolDefinition } from '@orchestrate/model';
-import type { Workspace } from '@orchestrate/workspace';
+import type { CommandExecutor, Workspace } from '@orchestrate/workspace';
 
 export interface Tool<TInput = Record<string, unknown>, TOutput = unknown> {
   name: string;
@@ -117,6 +117,83 @@ export function createWriteFileTool(
   };
 }
 
+// ── execute_command ─────────────────────────────────────────────────────────
+
+export interface ExecuteCommandInput extends Record<string, unknown> {
+  command: string;
+  args: string[];
+  cwd?: string;
+}
+
+export interface ExecuteCommandResult {
+  exitCode: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}
+
+export function createExecuteCommandTool(
+  executor: CommandExecutor
+): Tool<ExecuteCommandInput, ExecuteCommandResult> {
+  return {
+    name: 'execute_command',
+    description:
+      'Executes an allowed command (node, npm, npx, tsc, git) in the workspace. ' +
+      'Returns exit code, stdout, stderr, and whether it timed out. ' +
+      'Non-zero exit codes are returned as structured results, not exceptions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: {
+          type: 'string',
+          description: 'The executable to run. Must be one of: node, npm, npx, tsc, git.',
+        },
+        args: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Arguments to pass to the command.',
+        },
+        cwd: {
+          type: 'string',
+          description:
+            'Optional working directory relative to the workspace root. Defaults to workspace root.',
+        },
+      },
+      required: ['command', 'args'],
+    },
+    async execute(input: ExecuteCommandInput): Promise<ExecuteCommandResult> {
+      // Tool-boundary validation: model-generated input is untrusted.
+      if (typeof input?.command !== 'string' || input.command.trim() === '') {
+        throw new Error('execute_command requires a non-empty string "command" parameter.');
+      }
+      if (!Array.isArray(input.args)) {
+        throw new Error('execute_command requires an array "args" parameter.');
+      }
+      for (const arg of input.args) {
+        if (typeof arg !== 'string') {
+          throw new Error('execute_command: each element of "args" must be a string.');
+        }
+      }
+      if (input.cwd !== undefined && typeof input.cwd !== 'string') {
+        throw new Error('execute_command: "cwd", if provided, must be a string.');
+      }
+
+      const result = await executor.execute(input.command, input.args, {
+        cwd: input.cwd,
+      });
+
+      return {
+        exitCode: result.exitCode,
+        signal: result.signal,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        timedOut: result.timedOut,
+      };
+    },
+  };
+}
+
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
 
@@ -163,6 +240,7 @@ export class ToolRegistry {
 
 export interface CreateDefaultToolRegistryOptions {
   workspace?: Workspace;
+  executor?: CommandExecutor;
 }
 
 export function createDefaultToolRegistry(
@@ -179,6 +257,15 @@ export function createDefaultToolRegistry(
   if (ws) {
     registry.register(createReadFileTool(ws));
     registry.register(createWriteFileTool(ws));
+  }
+
+  const executor =
+    options && 'readFile' in options
+      ? undefined
+      : (options as CreateDefaultToolRegistryOptions)?.executor;
+
+  if (executor) {
+    registry.register(createExecuteCommandTool(executor));
   }
 
   return registry;
