@@ -4,6 +4,7 @@
     { "path": "./apps/engine" },
     { "path": "./apps/web" },
     { "path": "./packages/brain" },
+    { "path": "./packages/compiler" },
     { "path": "./packages/core" },
     { "path": "./packages/model" },
     { "path": "./packages/telemetry" },
