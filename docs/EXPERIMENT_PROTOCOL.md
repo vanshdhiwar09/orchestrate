@@ -157,11 +157,35 @@ AGENT CLAIMS (Untrusted)
 | **Time to Verified** | `time_to_verified_ms` | Elapsed wall-clock time in milliseconds from Agent B task invocation to passing verification (`VERIFIED`). If execution terminates in failure, records total duration with `verification_status: FAILED`. |
 | **Token Usage** | `usage` | Structured object containing `input_tokens`, `output_tokens`, `total_tokens`, `estimated_cost_usd`, and `usage_available` flag. |
 
-### 5.2 Measurement Criteria for Discovery Actions
-A tool execution counts as a discovery action if:
-- It is a read-only exploration command (`read_file`, `git_status`, `git_diff`, `git_log`, `execute_command` running grep/find/cat).
-- In Arm B and C: It requests files or symbols that were already summarized or explicitly documented in the handoff/context (indicates context neglect or insufficient detail).
-- In Arm A: Any read targeting Task 1 artifacts (quantifies baseline rediscovery burden).
+### 5.2 Discovery Measurement Contract (V1 Deterministic Rule)
+For V1, discovery actions are evaluated deterministically against structured supplied context references (see [`docs/DISCOVERY_MEASUREMENT.md`](file:///c:/Users/VANSH/OneDrive/Desktop/orchestrate/docs/DISCOVERY_MEASUREMENT.md)):
+
+1. **Operational Definition:**
+   A discovery action is a tool invocation by Agent B that retrieves repository/project information that was not already explicitly available in the context supplied to Agent B prior to task execution. The primary metric is `discovery_actions`, representing the absolute count of qualifying discovery events.
+2. **Qualifying Categories & Exact Targets:**
+   - `FILE_READ` (`read_file`): target is normalized repository-relative file path.
+   - `FILE_LIST` (`list_files`): target is normalized repository-relative directory path ending with `/`.
+   - `SEARCH` (`search`/`grep`): target is exact search term string.
+   - `SYMBOL_LOOKUP` (`lookup_symbol`): target is exact symbol identifier name.
+   - `GIT_STATE` (`git_status`): canonical state identifier (`"status"`).
+   - `GIT_HISTORY` (`git_log`): target commit/log ref (`"HEAD"` or `""`).
+   - `GIT_DIFF` (`git_diff`): target diff ref or path specifier (`""` or `"HEAD"`).
+3. **Strict Exclusions:**
+   `write_file`, `delete_file`, `run_command` (compilers/execution), `run_tests`, `build`, `typecheck`, `lint`, and `commit` never qualify as discovery.
+4. **Duplicate Counting:**
+   Every qualifying retrieval invocation counts separately (e.g. 3 reads of the same unsupplied file = 3 discovery actions). The metric measures exploration actions and rediscovery overhead, not unique knowledge items.
+5. **Exact Type-Aware Context Exemption:**
+   Context exemption is exact and type-aware. The evaluator MUST NOT infer that one supplied context reference semantically covers another retrieval target:
+   - `FILE: path` exempts only `FILE_READ` of that exact path.
+   - `DIRECTORY: dir/` exempts only `FILE_LIST` of that exact directory. (Supplying `FILE: src/auth.ts` does NOT exempt `list_files("src/")`).
+   - `SYMBOL: name` exempts only `SYMBOL_LOOKUP` of `name` or exact `SEARCH` of `name`. (Does not exempt natural language searches).
+   - Git operations (`GIT_STATE`, `GIT_HISTORY`, `GIT_DIFF`) are exempt ONLY when matching Git context was explicitly supplied.
+6. **Arm Blindness:**
+   The discovery evaluator operates purely on tool execution events and supplied context references; it does not use arm-specific branching or encode H1/H2 assumptions.
+7. **Human Intervention Distinction:**
+   If Agent B requests project information from an operator, it increments `human_interventions`, never `discovery_actions`.
+8. **Ambiguity / Unknown Tools:**
+   Unknown tools or invocations that cannot be deterministically classified are recorded in `unclassified` and strictly excluded from `discovery_actions`.
 
 ### 5.3 Measurement Criteria for Rework (V1 Deterministic Manifest)
 For V1, rework is evaluated strictly against a **frozen upstream artifact manifest**:
