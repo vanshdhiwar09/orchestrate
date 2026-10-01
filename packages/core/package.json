@@ -9,7 +9,10 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@orchestrate/brain": "*",
+    "@orchestrate/compiler": "*",
     "@orchestrate/model": "*",
+    "@orchestrate/verification": "*",
     "@orchestrate/workspace": "*"
   }
 }

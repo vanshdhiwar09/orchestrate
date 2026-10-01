@@ -6,7 +6,10 @@
   },
   "include": ["src/**/*"],
   "references": [
+    { "path": "../brain" },
+    { "path": "../compiler" },
     { "path": "../model" },
+    { "path": "../verification" },
     { "path": "../workspace" }
   ]
 }
