@@ -114,7 +114,7 @@ Measurement instrumentation must be identical across all arms. The only paramete
 9. **Pilot Run Exclusion:**  
    All exploratory pilot runs are quarantined and excluded from the primary evaluation dataset.
 
-> **Supplementary contracts (M6A & M6B):** Controls 1–3 and run/trial container semantics are made precise, without changing their meaning, by [`docs/TASK_A_SNAPSHOT_CONTRACT.md`](./TASK_A_SNAPSHOT_CONTRACT.md) (canonical Task-A snapshot identity), [`docs/EXPERIMENTAL_ARM_ISOLATION.md`](./EXPERIMENTAL_ARM_ISOLATION.md) (arm construction, Task-B equality, physical and information isolation, invalidation rules), and [`docs/TRIAL_RUN_CONTRACT.md`](./TRIAL_RUN_CONTRACT.md) (trial identity, lifecycle, 3-arm container, failure taxonomy, validity).
+> **Supplementary contracts (M6A, M6B, M6C):** Controls 1–3, run/trial container semantics, and harness treatment controls are made precise, without changing their meaning, by [`docs/TASK_A_SNAPSHOT_CONTRACT.md`](./TASK_A_SNAPSHOT_CONTRACT.md) (canonical Task-A snapshot identity), [`docs/EXPERIMENTAL_ARM_ISOLATION.md`](./EXPERIMENTAL_ARM_ISOLATION.md) (arm construction, Task-B equality, physical and information isolation, invalidation rules), [`docs/TRIAL_RUN_CONTRACT.md`](./TRIAL_RUN_CONTRACT.md) (trial identity, lifecycle, 3-arm container, failure taxonomy, validity), and [`docs/HARNESS_EXECUTION_CONTRACT.md`](./HARNESS_EXECUTION_CONTRACT.md) (execution controls, treatment injection, evidence capture, failure boundaries).
 
 
 ---
