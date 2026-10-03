@@ -42,9 +42,11 @@ export function sanitizeSecretText(text: string, customSecrets?: string[]): stri
   result = result.replace(/\bghp_[a-zA-Z0-9]{20,}\b/g, REDACTED_PLACEHOLDER);
   result = result.replace(/\bxox[baprs]-[a-zA-Z0-9]{10,}\b/g, REDACTED_PLACEHOLDER);
 
-  // 5. Redact key-value assignment patterns: api_key = "...", with key ..., password: "..."
+  // 5. Redact key-value assignment patterns: api_key: ..., api-key=..., password: ..., key: ..., key=...
+  // Strictly requires assignment delimiters (':' or '=') so that plain English and SQL clauses
+  // (e.g. "PRIMARY KEY", "FOREIGN KEY", "key difference", "key principles") are never redacted.
   result = result.replace(
-    /(\b(?:api_?key|access_?token|auth_?token|secret_?key|client_?secret|password|passwd|pwd|token|secret|key)\s*[:=\s]\s*["']?)[a-zA-Z0-9_\-\.]{8,}["']?/gi,
+    /(\b(?:api[_-]?key|access_?token|auth_?token|secret_?key|client_?secret|password|passwd|pwd|token|secret|key)\s*[:=]\s*["']?)[a-zA-Z0-9_\-\.]{8,}["']?/gi,
     `$1${REDACTED_PLACEHOLDER}`
   );
 

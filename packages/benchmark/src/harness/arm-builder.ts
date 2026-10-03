@@ -128,6 +128,12 @@ export function buildArmTriad(
   assertAgentBlinded(armBUnverifiedHandoff, trial, 'armBUnverifiedHandoff');
   assertAgentBlinded(armCCompiledContext, trial, 'armCCompiledContext');
 
+  // Sampling configuration from execution controls
+  const samplingConfig = Object.freeze({
+    temperature: trial.controls.temperature,
+    maxTokens: trial.controls.maxTokens,
+  });
+
   // ARM_A_BASELINE
   const armATreatmentFingerprint = computeTreatmentFingerprint('ARM_A_BASELINE', null);
   const armAInput: ArmExecutionInput = Object.freeze({
@@ -139,6 +145,7 @@ export function buildArmTriad(
     contextEnvelope: null,
     controlFingerprint: trial.controlFingerprint,
     treatmentFingerprint: armATreatmentFingerprint,
+    samplingConfig,
   });
 
   const armARecord: TrialArmRecord = Object.freeze({
@@ -169,6 +176,7 @@ export function buildArmTriad(
     contextEnvelope: armBEnvelope,
     controlFingerprint: trial.controlFingerprint,
     treatmentFingerprint: armBTreatmentFingerprint,
+    samplingConfig,
   });
 
   const armBRecord: TrialArmRecord = Object.freeze({
@@ -199,6 +207,7 @@ export function buildArmTriad(
     contextEnvelope: armCEnvelope,
     controlFingerprint: trial.controlFingerprint,
     treatmentFingerprint: armCTreatmentFingerprint,
+    samplingConfig,
   });
 
   const armCRecord: TrialArmRecord = Object.freeze({

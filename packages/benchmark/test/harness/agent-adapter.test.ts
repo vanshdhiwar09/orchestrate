@@ -44,6 +44,7 @@ describe('AgentExecutionAdapter', () => {
           cleanup: async () => {},
         };
       },
+      cleanup: async (_path: string): Promise<void> => {},
     };
   };
 
@@ -120,7 +121,7 @@ describe('AgentExecutionAdapter', () => {
       modelClient: mockModel,
     });
 
-    const evidence = await adapter.execute(sampleArmInput);
+    const { evidence, workspace } = await adapter.execute(sampleArmInput);
 
     expect(evidence.trialId).toBe('trial-run-100');
     expect(evidence.armId).toBe('ARM_A_BASELINE');
@@ -128,6 +129,15 @@ describe('AgentExecutionAdapter', () => {
     expect(evidence.outcome).toBe('COMPLETED');
     expect(evidence.finalResponse?.content).toBe('I have written hello.txt.');
     expect(evidence.finalResponse?.finishReason).toBe('stop');
+
+    // Host-independent normalized workspace path (Fix 2)
+    expect(evidence.workspacePath).toBe('workspace://ARM_A_BASELINE');
+    expect(evidence.workspacePath).not.toContain(tmpdir());
+
+    // Live workspace handle retained for verification and teardown (Fix 3)
+    expect(workspace).toBeDefined();
+    expect(workspace.path).toBeDefined();
+    expect(typeof workspace.cleanup).toBe('function');
 
     // Model and Tool events captured
     expect(evidence.modelEvents).toHaveLength(2);
@@ -155,7 +165,7 @@ describe('AgentExecutionAdapter', () => {
   it('handles model failure cleanly and records FAILED outcome with error evidence', async () => {
     const failingModel: ModelClient = {
       complete: async () => {
-        throw new Error('Connection refused to Nebius API with key secret-nebius-key-12345');
+        throw new Error('Connection refused to Nebius API with key: secret-nebius-key-12345');
       },
     };
 
@@ -164,7 +174,7 @@ describe('AgentExecutionAdapter', () => {
       modelClient: failingModel,
     });
 
-    const evidence = await adapter.execute(sampleArmInput);
+    const { evidence } = await adapter.execute(sampleArmInput);
 
     expect(evidence.outcome).toBe('FAILED');
     expect(evidence.error).toBeDefined();
@@ -218,7 +228,7 @@ describe('AgentExecutionAdapter', () => {
       modelClient: mockModel,
     });
 
-    const evidence = await adapter.execute(sampleArmInput);
+    const { evidence } = await adapter.execute(sampleArmInput);
 
     expect(evidence.outcome).toBe('COMPLETED');
     expect(evidence.toolEvents).toHaveLength(1);
@@ -227,5 +237,42 @@ describe('AgentExecutionAdapter', () => {
     expect(evidence.toolEvents[0].error).toBeDefined();
 
     expect(verifyEvidenceSeal(evidence)).toBe(true);
+  });
+
+  it('forwards sampling controls (temperature, maxTokens) to the model client (Fix 4)', async () => {
+    let capturedRequest: ModelRequest | null = null;
+    const mockModel: ModelClient = {
+      complete: async (req: ModelRequest): Promise<ModelResponse> => {
+        capturedRequest = req;
+        return {
+          id: 'resp-sampling',
+          model: req.model,
+          message: { role: 'assistant', content: 'Done' },
+          finishReason: 'stop',
+        };
+      },
+    };
+
+    const adapter = new AgentExecutionAdapter({
+      workspaceFactory: createMockWorkspaceFactory(),
+      modelClient: mockModel,
+    });
+
+    const inputWithSampling: ArmExecutionInput = {
+      ...sampleArmInput,
+      samplingConfig: {
+        temperature: 0.15,
+        maxTokens: 2048,
+      },
+    };
+
+    const { evidence, workspace } = await adapter.execute(inputWithSampling);
+
+    expect(capturedRequest).toBeDefined();
+    expect(capturedRequest?.temperature).toBe(0.15);
+    expect(capturedRequest?.maxTokens).toBe(2048);
+    expect(evidence.outcome).toBe('COMPLETED');
+    expect(evidence.workspacePath).toBe('workspace://ARM_A_BASELINE');
+    await workspace.cleanup();
   });
 });

@@ -133,6 +133,10 @@ export interface ArmExecutionInput {
   contextEnvelope: TreatmentContextEnvelope | null;
   controlFingerprint: ControlFingerprint;
   treatmentFingerprint: TreatmentFingerprint;
+  samplingConfig?: {
+    temperature?: number;
+    maxTokens?: number;
+  };
 }
 
 /**
@@ -262,4 +266,14 @@ export interface BenchmarkWorkspace {
  */
 export interface WorkspaceFactory {
   create(snapshotCommitSha: string): Promise<BenchmarkWorkspace>;
+  cleanup(path: string): Promise<void>;
+}
+
+/**
+ * Result of executing an arm via AgentExecutionAdapter.
+ * Pairs sealed, machine-independent evidence with the live workspace handle for subsequent verification.
+ */
+export interface ArmExecutionResult {
+  evidence: RawExecutionEvidence;
+  workspace: BenchmarkWorkspace;
 }

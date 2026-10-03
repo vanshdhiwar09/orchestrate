@@ -91,6 +91,22 @@ describe('ArmBuilder', () => {
       expect(cfC).toEqual(trial.controlFingerprint);
     });
 
+    it('populates samplingConfig identically across all three arms matching trial controls', () => {
+      const arms = buildArmTriad(trial, {
+        taskBPrompt: validTaskBPrompt,
+        armBUnverifiedHandoff: validArmBNotes,
+        armCCompiledContext: validArmCContext,
+      });
+
+      const scA = arms.ARM_A_BASELINE.input.samplingConfig;
+      const scB = arms.ARM_B_UNVERIFIED_HANDOFF.input.samplingConfig;
+      const scC = arms.ARM_C_ORCHESTRATE.input.samplingConfig;
+
+      expect(scA).toEqual({ temperature: dummyControls.temperature, maxTokens: dummyControls.maxTokens });
+      expect(scB).toEqual({ temperature: dummyControls.temperature, maxTokens: dummyControls.maxTokens });
+      expect(scC).toEqual({ temperature: dummyControls.temperature, maxTokens: dummyControls.maxTokens });
+    });
+
     it('enforces TreatmentFingerprint(A) != TreatmentFingerprint(B) != TreatmentFingerprint(C)', () => {
       const arms = buildArmTriad(trial, {
         taskBPrompt: validTaskBPrompt,

@@ -143,4 +143,41 @@ describe('LocalWorkspaceFactory', () => {
 
     await expect(factory.create(validSha)).rejects.toThrow('Failed to clone source repository');
   });
+
+  describe('cleanup by path', () => {
+    it('cleans up workspace via factory.cleanup(path) idempotently', async () => {
+      const factory = new LocalWorkspaceFactory({
+        sourceRepoPath: dummySourceRepo,
+        gitExecutor: createMockGitExecutor(),
+      });
+
+      const ws = await factory.create(validSha);
+      expect(existsSync(ws.path)).toBe(true);
+
+      // Explicit cleanup via factory
+      await factory.cleanup(ws.path);
+      expect(existsSync(ws.path)).toBe(false);
+      expect(factory.isOwnedPath(ws.path)).toBe(false);
+
+      // Repeated cleanup on same path is a safe no-op
+      await expect(factory.cleanup(ws.path)).resolves.not.toThrow();
+
+      // Repeated cleanup via benchWs.cleanup is also safe
+      await expect(ws.cleanup()).resolves.not.toThrow();
+    });
+
+    it('rejects unowned or arbitrary paths', async () => {
+      const factory = new LocalWorkspaceFactory({
+        sourceRepoPath: dummySourceRepo,
+        gitExecutor: createMockGitExecutor(),
+      });
+
+      await expect(factory.cleanup(join(tmpdir(), 'arbitrary-unowned-dir'))).rejects.toThrow(
+        'Cannot cleanup unowned path'
+      );
+      await expect(factory.cleanup('')).rejects.toThrow(
+        'WorkspaceFactory.cleanup requires a non-empty path string'
+      );
+    });
+  });
 });

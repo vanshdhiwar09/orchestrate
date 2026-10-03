@@ -83,6 +83,28 @@ describe('Structured Redaction', () => {
       const sanitized = sanitizeSecretText(text);
       expect(sanitized).toBe(text);
     });
+
+    it('preserves bare "key" in SQL, English prose, and code identifiers', () => {
+      const sql = 'CREATE TABLE users (id INT PRIMARY KEY, org_id INT, FOREIGN KEY (org_id) REFERENCES orgs(id));';
+      expect(sanitizeSecretText(sql)).toBe(sql);
+
+      const prose = 'The key difference between approach A and approach B is state isolation. The key principles remain unchanged.';
+      expect(sanitizeSecretText(prose)).toBe(prose);
+
+      const code = 'const key_function_name = "runVerification"; const keyIdentifier = 42;';
+      expect(sanitizeSecretText(code)).toBe(code);
+    });
+
+    it('redacts secret assignments with "key:" and "key=" but not bare "key"', () => {
+      const secretWithColon = 'key: "secret-value-abcdef123"';
+      expect(sanitizeSecretText(secretWithColon)).toBe(`key: "${REDACTED_PLACEHOLDER}`);
+
+      const secretWithEquals = 'key = secret-token-98765432';
+      expect(sanitizeSecretText(secretWithEquals)).toBe(`key = ${REDACTED_PLACEHOLDER}`);
+
+      const apiKeyDash = 'api-key: secret-api-key-value-123';
+      expect(sanitizeSecretText(apiKeyDash)).toBe(`api-key: ${REDACTED_PLACEHOLDER}`);
+    });
   });
 
   describe('redactSecrets object traversal', () => {

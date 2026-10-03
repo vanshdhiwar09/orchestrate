@@ -76,6 +76,7 @@ export class LocalWorkspaceFactory implements WorkspaceFactory {
   private readonly gitExecutor: GitExecutorFn;
   private readonly isCustomGitExecutor: boolean;
   private readonly createdPaths = new Set<string>();
+  private readonly cleanedUpPaths = new Set<string>();
 
   constructor(options: WorkspaceFactoryOptions) {
     if (!options?.sourceRepoPath || typeof options.sourceRepoPath !== 'string' || options.sourceRepoPath.trim() === '') {
@@ -176,16 +177,7 @@ export class LocalWorkspaceFactory implements WorkspaceFactory {
         );
       }
 
-      let cleanedUp = false;
-      const cleanup = async (): Promise<void> => {
-        if (cleanedUp) return;
-        if (!this.createdPaths.has(tempDir)) {
-          throw new Error(`Cannot cleanup unowned path "${tempDir}".`);
-        }
-        cleanedUp = true;
-        this.createdPaths.delete(tempDir);
-        await rm(tempDir, { recursive: true, force: true });
-      };
+      const cleanup = async (): Promise<void> => this.cleanup(tempDir);
 
       return Object.freeze({
         path: tempDir,
@@ -206,12 +198,36 @@ export class LocalWorkspaceFactory implements WorkspaceFactory {
   }
 
   /**
+   * Cleans up a specific workspace by path if it is owned by this factory.
+   * Safe against repeated calls; rejects unowned or arbitrary paths.
+   */
+  async cleanup(path: string): Promise<void> {
+    if (!path || typeof path !== 'string' || path.trim() === '') {
+      throw new Error('WorkspaceFactory.cleanup requires a non-empty path string.');
+    }
+    const resolvedPath = resolve(path.trim());
+
+    if (this.cleanedUpPaths.has(resolvedPath)) {
+      return; // Repeated cleanup is safe
+    }
+
+    if (!this.createdPaths.has(resolvedPath)) {
+      throw new Error(`Cannot cleanup unowned path "${path}".`);
+    }
+
+    this.createdPaths.delete(resolvedPath);
+    this.cleanedUpPaths.add(resolvedPath);
+    await rm(resolvedPath, { recursive: true, force: true });
+  }
+
+  /**
    * Cleans up all active workspaces created by this factory.
    */
   async cleanupAll(): Promise<void> {
     const paths = [...this.createdPaths];
     for (const dir of paths) {
       this.createdPaths.delete(dir);
+      this.cleanedUpPaths.add(dir);
       try {
         await rm(dir, { recursive: true, force: true });
       } catch {

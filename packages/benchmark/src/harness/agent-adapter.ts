@@ -17,6 +17,8 @@ import { InstrumentedModelClient } from './instrumented-model-client.js';
 import { InstrumentedToolRegistry } from './instrumented-tool-registry.js';
 import type {
   ArmExecutionInput,
+  ArmExecutionResult,
+  BenchmarkWorkspace,
   ExecutionOutcome,
   RawExecutionEvidence,
   WorkspaceFactory,
@@ -111,9 +113,10 @@ export class AgentExecutionAdapter {
   }
 
   /**
-   * Executes a single experimental arm and returns sealed raw execution evidence.
+   * Executes a single experimental arm and returns sealed raw execution evidence
+   * along with the live workspace handle for downstream verification and teardown.
    */
-  async execute(input: ArmExecutionInput): Promise<RawExecutionEvidence> {
+  async execute(input: ArmExecutionInput): Promise<ArmExecutionResult> {
     if (!input || typeof input !== 'object') {
       throw new Error('AgentExecutionAdapter.execute: input must be a valid ArmExecutionInput.');
     }
@@ -169,6 +172,8 @@ export class AgentExecutionAdapter {
         task: input.taskBPrompt,
         systemPrompt: input.systemPrompt,
         model: input.controlFingerprint.modelIdentity,
+        temperature: input.samplingConfig?.temperature,
+        maxTokens: input.samplingConfig?.maxTokens,
       });
 
       finalResponse = {
@@ -202,7 +207,7 @@ export class AgentExecutionAdapter {
       trialId: input.trialId,
       armId: input.armId,
       snapshotCommitSha: input.snapshotCommitSha,
-      workspacePath: benchWorkspace.path,
+      workspacePath: `workspace://${input.armId}`,
       modelIdentity: input.controlFingerprint.modelIdentity,
       startedAt,
       completedAt,
@@ -216,6 +221,10 @@ export class AgentExecutionAdapter {
     };
 
     // 8. Redact and seal evidence
-    return sealEvidence(unsealedEvidence, this.customSecrets);
+    const evidence = sealEvidence(unsealedEvidence, this.customSecrets);
+    return {
+      evidence,
+      workspace: benchWorkspace,
+    };
   }
 }
