@@ -9,3 +9,5 @@ export * from './instrumented-tool-registry.js';
 export * from './redaction.js';
 export * from './evidence-sealer.js';
 export * from './agent-adapter.js';
+export * from './diff-capture.js';
+export * from './verification-adapter.js';

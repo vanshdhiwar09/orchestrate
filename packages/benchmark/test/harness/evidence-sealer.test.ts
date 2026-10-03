@@ -1,10 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import {
   computeEvidenceContentHash,
+  computeVerificationEvidenceContentHash,
   sealEvidence,
+  sealVerificationEvidence,
   verifyEvidenceSeal,
+  verifyVerificationEvidenceSeal,
 } from '../../src/harness/evidence-sealer.js';
-import type { RawExecutionEvidence } from '../../src/harness/types.js';
+import type {
+  BenchmarkVerificationEvidence,
+  RawExecutionEvidence,
+} from '../../src/harness/types.js';
 
 describe('EvidenceSealer', () => {
   const dummyEvidence: Omit<RawExecutionEvidence, 'evidenceContentHash'> = {
@@ -94,5 +100,133 @@ describe('EvidenceSealer', () => {
       durationMs: 99999,
     };
     expect(verifyEvidenceSeal(tampered)).toBe(false);
+  });
+
+  describe('Verification Evidence Sealing', () => {
+    const dummyVerificationEvidence: Omit<BenchmarkVerificationEvidence, 'evidenceContentHash'> = {
+      armId: 'ARM_A_BASELINE',
+      taskId: 'task-auth',
+      snapshotCommitSha: '0123456789abcdef0123456789abcdef01234567',
+      workspacePath: 'workspace://ARM_A_BASELINE',
+      startedAt: '2026-10-01T12:00:00.000Z',
+      completedAt: '2026-10-01T12:01:00.000Z',
+      durationMs: 60000,
+      status: 'VERIFIED',
+      checks: [
+        {
+          checkId: 'check-1',
+          name: 'Check 1',
+          command: 'node',
+          args: ['-e', 'process.exit(0)'],
+          exitCode: 0,
+          signal: null,
+          stdout: 'ok',
+          stderr: '',
+          timedOut: false,
+          durationMs: 50,
+          verifiedAt: '2026-10-01T12:00:50.000Z',
+          passed: true,
+        },
+      ],
+      workspaceBinding: {
+        snapshotCommitSha: '0123456789abcdef0123456789abcdef01234567',
+        workspacePath: 'workspace://ARM_A_BASELINE',
+        headCommitSha: '0123456789abcdef0123456789abcdef01234567',
+        headCommit: {
+          hash: '0123456789abcdef0123456789abcdef01234567',
+          subject: 'Baseline',
+          author: 'Tester',
+          timestamp: '2026-10-01T00:00:00Z',
+        },
+        gitStatus: {
+          clean: true,
+          branch: 'main',
+          detached: false,
+          staged: [],
+          unstaged: [],
+          untracked: [],
+        },
+      },
+      diffCapture: {
+        snapshotCommitSha: '0123456789abcdef0123456789abcdef01234567',
+        headCommitSha: '0123456789abcdef0123456789abcdef01234567',
+        headCommit: {
+          hash: '0123456789abcdef0123456789abcdef01234567',
+          subject: 'Baseline',
+          author: 'Tester',
+          timestamp: '2026-10-01T00:00:00Z',
+        },
+        gitStatus: {
+          clean: true,
+          branch: 'main',
+          detached: false,
+          staged: [],
+          unstaged: [],
+          untracked: [],
+        },
+        changes: {
+          added: [],
+          modified: [],
+          deleted: [],
+          renamed: [],
+        },
+        diff: '',
+        capturedAt: '2026-10-01T12:00:00.000Z',
+      },
+    };
+
+    it('computes deterministic verification evidence hash', () => {
+      const hash1 = computeVerificationEvidenceContentHash(dummyVerificationEvidence);
+      const hash2 = computeVerificationEvidenceContentHash(dummyVerificationEvidence);
+
+      expect(hash1).toBe(hash2);
+      expect(hash1).toHaveLength(64);
+    });
+
+    it('changes hash when verification status changes', () => {
+      const hash1 = computeVerificationEvidenceContentHash(dummyVerificationEvidence);
+      const modified = {
+        ...dummyVerificationEvidence,
+        status: 'FAILED' as const,
+      };
+      const hash2 = computeVerificationEvidenceContentHash(modified);
+
+      expect(hash1).not.toBe(hash2);
+    });
+
+    it('seals verification evidence into immutable record and detects tampering', () => {
+      const sealed = sealVerificationEvidence(dummyVerificationEvidence);
+
+      expect(sealed.evidenceContentHash).toBeDefined();
+      expect(Object.isFrozen(sealed)).toBe(true);
+      expect(verifyVerificationEvidenceSeal(sealed)).toBe(true);
+
+      // Tampered status fails seal verification
+      const tampered = { ...sealed, status: 'FAILED' as const };
+      expect(verifyVerificationEvidenceSeal(tampered)).toBe(false);
+
+      // Invalid object returns false
+      expect(verifyVerificationEvidenceSeal(null as any)).toBe(false);
+      expect(verifyVerificationEvidenceSeal({} as any)).toBe(false);
+    });
+
+    it('redacts custom secrets from verification evidence checks before sealing', () => {
+      const customSecret = 'my-verification-secret-xyz';
+      const withSecret: typeof dummyVerificationEvidence = {
+        ...dummyVerificationEvidence,
+        checks: [
+          {
+            ...dummyVerificationEvidence.checks[0],
+            stdout: `Check completed with secret: ${customSecret}`,
+          },
+        ],
+      };
+
+      const sealed = sealVerificationEvidence(withSecret, [customSecret]);
+
+      expect(sealed.checks[0].stdout).not.toContain(customSecret);
+      expect(sealed.checks[0].stdout).toContain('[REDACTED]');
+      expect(verifyVerificationEvidenceSeal(sealed, [customSecret])).toBe(true);
+    });
   });
 });

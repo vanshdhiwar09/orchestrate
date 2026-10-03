@@ -162,7 +162,17 @@ export interface TrialRecord {
   createdAt: string;
 }
 
-import type { GitRepository, Workspace } from '@orchestrate/workspace';
+import type {
+  GitCommit,
+  GitRepository,
+  GitStatus,
+  Workspace,
+} from '@orchestrate/workspace';
+import type {
+  VerificationCheck,
+  VerificationEvidence,
+  VerificationStatus,
+} from '@orchestrate/verification';
 
 /**
  * Standard usage shape conforming to benchmark metrics protocol.
@@ -276,4 +286,68 @@ export interface WorkspaceFactory {
 export interface ArmExecutionResult {
   evidence: RawExecutionEvidence;
   workspace: BenchmarkWorkspace;
+}
+
+/**
+ * Summary of changed files categorized by Git status and unified diff analysis.
+ */
+export interface DownstreamChangeSummary {
+  added: readonly string[];
+  modified: readonly string[];
+  deleted: readonly string[];
+  renamed: readonly { from: string; to: string }[];
+}
+
+/**
+ * Downstream repository diff capture comparing current workspace against the canonical Task-A snapshot.
+ */
+export interface DownstreamDiffCapture {
+  snapshotCommitSha: string;
+  headCommitSha: string | null;
+  headCommit: GitCommit | null;
+  gitStatus: GitStatus;
+  changes: DownstreamChangeSummary;
+  diff: string;
+  capturedAt: string;
+}
+
+/**
+ * Exact binding proving which workspace state was verified.
+ */
+export interface WorkspaceBindingEvidence {
+  snapshotCommitSha: string;
+  workspacePath: string;
+  headCommitSha: string | null;
+  headCommit: GitCommit | null;
+  gitStatus: GitStatus;
+}
+
+/**
+ * Input contract for VerificationAdapter.
+ */
+export interface BenchmarkVerificationInput {
+  armId: BenchmarkArmId;
+  taskId: string;
+  snapshotCommitSha: string;
+  workspace: BenchmarkWorkspace;
+  checks: VerificationCheck[];
+  customSecrets?: string[];
+}
+
+/**
+ * Complete, sealed benchmark verification evidence for a single arm execution.
+ */
+export interface BenchmarkVerificationEvidence {
+  armId: BenchmarkArmId;
+  taskId: string;
+  snapshotCommitSha: string;
+  workspacePath: string;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  status: VerificationStatus;
+  checks: readonly VerificationEvidence[];
+  workspaceBinding: WorkspaceBindingEvidence;
+  diffCapture: DownstreamDiffCapture;
+  evidenceContentHash: string;
 }

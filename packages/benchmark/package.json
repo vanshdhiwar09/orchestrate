@@ -9,6 +9,9 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@orchestrate/core": "*",
+    "@orchestrate/model": "*",
+    "@orchestrate/verification": "*",
     "@orchestrate/workspace": "*"
   }
 }

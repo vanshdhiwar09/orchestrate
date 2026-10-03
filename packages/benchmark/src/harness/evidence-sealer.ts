@@ -1,6 +1,6 @@
 import { canonicalJson, sha256 } from './fingerprints.js';
 import { redactSecrets } from './redaction.js';
-import type { RawExecutionEvidence } from './types.js';
+import type { BenchmarkVerificationEvidence, RawExecutionEvidence } from './types.js';
 
 /**
  * Computes the canonical SHA-256 hash of raw execution evidence.
@@ -50,6 +50,53 @@ export function verifyEvidenceSeal(
 
   const { evidenceContentHash, ...unsealedPart } = sealed;
   const expectedHash = computeEvidenceContentHash(unsealedPart, customSecrets);
+
+  return evidenceContentHash === expectedHash;
+}
+
+/**
+ * Computes the canonical SHA-256 hash of benchmark verification evidence.
+ * Redacts secrets first and strictly excludes the hash field itself from hashing.
+ */
+export function computeVerificationEvidenceContentHash(
+  evidence: Omit<BenchmarkVerificationEvidence, 'evidenceContentHash'>,
+  customSecrets?: string[]
+): string {
+  const sanitized = redactSecrets(evidence, customSecrets);
+  const serialized = canonicalJson(sanitized);
+  return sha256(serialized);
+}
+
+/**
+ * Seals benchmark verification evidence into an immutable, hashed record.
+ * Applies redaction, computes evidenceContentHash, and freezes the record.
+ */
+export function sealVerificationEvidence(
+  evidence: Omit<BenchmarkVerificationEvidence, 'evidenceContentHash'>,
+  customSecrets?: string[]
+): BenchmarkVerificationEvidence {
+  const sanitized = redactSecrets(evidence, customSecrets);
+  const hash = computeVerificationEvidenceContentHash(sanitized, customSecrets);
+
+  return Object.freeze({
+    ...sanitized,
+    evidenceContentHash: hash,
+  });
+}
+
+/**
+ * Verifies that a sealed verification evidence record has a valid SHA-256 content hash.
+ */
+export function verifyVerificationEvidenceSeal(
+  sealed: BenchmarkVerificationEvidence,
+  customSecrets?: string[]
+): boolean {
+  if (!sealed || typeof sealed !== 'object' || typeof sealed.evidenceContentHash !== 'string') {
+    return false;
+  }
+
+  const { evidenceContentHash, ...unsealedPart } = sealed;
+  const expectedHash = computeVerificationEvidenceContentHash(unsealedPart, customSecrets);
 
   return evidenceContentHash === expectedHash;
 }

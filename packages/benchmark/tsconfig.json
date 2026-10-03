@@ -6,6 +6,9 @@
   },
   "include": ["src/**/*"],
   "references": [
+    { "path": "../core" },
+    { "path": "../model" },
+    { "path": "../verification" },
     { "path": "../workspace" }
   ]
 }
