@@ -157,3 +157,109 @@ export interface TrialRecord {
   arms?: Record<BenchmarkArmId, TrialArmRecord>;
   createdAt: string;
 }
+
+import type { GitRepository, Workspace } from '@orchestrate/workspace';
+
+/**
+ * Standard usage shape conforming to benchmark metrics protocol.
+ */
+export interface ExecutionUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number;
+  usage_available: boolean;
+}
+
+/**
+ * Chronological model completion event recorded by InstrumentedModelClient.
+ */
+export interface ModelCallEvent {
+  sequence: number;
+  type: 'MODEL_CALL';
+  model: string;
+  request: {
+    messagesCount: number;
+    toolsCount: number;
+    temperature?: number;
+    maxTokens?: number;
+  };
+  response?: {
+    id: string;
+    model: string;
+    finishReason: string;
+    toolCalls?: readonly {
+      id: string;
+      name: string;
+      arguments: Record<string, unknown>;
+    }[];
+    contentPreview?: string | null;
+  };
+  usage: ExecutionUsage;
+  durationMs: number;
+  error?: string;
+}
+
+/**
+ * Chronological tool invocation event recorded by InstrumentedToolRegistry.
+ */
+export interface ToolCallEvent {
+  sequence: number;
+  type: 'TOOL_CALL';
+  toolName: string;
+  arguments: Record<string, unknown>;
+  result: unknown;
+  success: boolean;
+  durationMs: number;
+  error?: string;
+}
+
+export type ExecutionOutcome =
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'BLOCKED_NEEDS_HUMAN';
+
+/**
+ * Complete raw execution evidence captured for one arm execution.
+ * Append-only record prior to verification and measurement.
+ */
+export interface RawExecutionEvidence {
+  trialId: string;
+  armId: BenchmarkArmId;
+  snapshotCommitSha: string;
+  workspacePath: string;
+  modelIdentity: string;
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  outcome: ExecutionOutcome;
+  modelEvents: readonly ModelCallEvent[];
+  toolEvents: readonly ToolCallEvent[];
+  finalResponse: {
+    content: string | null;
+    finishReason?: string;
+  } | null;
+  usage: ExecutionUsage;
+  error?: {
+    message: string;
+    stack?: string;
+  };
+  evidenceContentHash: string;
+}
+
+/**
+ * Isolated disposable workspace provisioned for an arm execution.
+ */
+export interface BenchmarkWorkspace {
+  path: string;
+  workspace: Workspace;
+  git: GitRepository;
+  cleanup(): Promise<void>;
+}
+
+/**
+ * Factory creating isolated workspaces starting at the canonical snapshot commit.
+ */
+export interface WorkspaceFactory {
+  create(snapshotCommitSha: string): Promise<BenchmarkWorkspace>;
+}
