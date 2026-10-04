@@ -11,3 +11,6 @@ export * from './evidence-sealer.js';
 export * from './agent-adapter.js';
 export * from './diff-capture.js';
 export * from './verification-adapter.js';
+export * from './integrity-guard.js';
+export * from './trial-state-machine.js';
+export * from './trial-runner.js';

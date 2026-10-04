@@ -228,7 +228,7 @@ The harness MUST sanitize the process environment before spawning agent executio
 ## 9. Model & Runtime Controls
 
 ### 9.1 Model Inference Settings
-- **Provider & Model:** Fixed model identifier (e.g. Nebius Token Factory `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`).
+- **Provider & Model:** Fixed model identifier selected for the trial from Nebius Token Factory (e.g. `nebius/meta-llama/Llama-3.3-70B-Instruct` or `nebius/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`). Any supported Nebius model may be configured for an experimental run, but once the trial begins, the model identity and inference configuration MUST remain frozen and strictly identical across all three arms (see [`docs/NEBIUS_MODEL_SELECTION_AND_CONTROL.md`](./NEBIUS_MODEL_SELECTION_AND_CONTROL.md)).
 - **Sampling & Inference Parameters:** Configured sampling parameters (such as temperature, top_p, max completion tokens, and presence/frequency penalties) MUST be controlled identically across all arms. If an underlying provider/model supports an explicit random seed and one is configured, the identical configured seed MUST be applied across all arms. Seed support is not universally mandated if the provider/model does not expose it, and the harness does not invent an artificial deterministic-generation guarantee.
 - **Max Completion Tokens:** Fixed upper bound per model response across all arms.
 

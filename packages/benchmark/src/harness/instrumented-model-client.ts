@@ -83,6 +83,7 @@ export class InstrumentedModelClient implements ModelClient {
       const event: ModelCallEvent = {
         sequence: seq,
         type: 'MODEL_CALL',
+        provider: response.provider ?? 'nebius',
         model: request.model,
         request: {
           messagesCount: request.messages?.length ?? 0,
@@ -118,6 +119,7 @@ export class InstrumentedModelClient implements ModelClient {
       const event: ModelCallEvent = {
         sequence: seq,
         type: 'MODEL_CALL',
+        provider: 'nebius',
         model: request.model,
         request: {
           messagesCount: request.messages?.length ?? 0,

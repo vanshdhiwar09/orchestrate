@@ -160,6 +160,7 @@ export interface TrialRecord {
   executionOrder: BenchmarkArmId[];
   arms?: Record<BenchmarkArmId, TrialArmRecord>;
   createdAt: string;
+  invalidationReason?: string;
 }
 
 import type {
@@ -191,6 +192,7 @@ export interface ExecutionUsage {
 export interface ModelCallEvent {
   sequence: number;
   type: 'MODEL_CALL';
+  provider?: string;
   model: string;
   request: {
     messagesCount: number;

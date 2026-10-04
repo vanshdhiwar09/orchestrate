@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   ModelClient,
+  ModelInferenceConfig,
   ModelRequest,
   ModelResponse,
   ToolCall,
@@ -9,12 +10,16 @@ import type {
 export interface NebiusClientOptions {
   apiKey?: string;
   baseUrl?: string;
+  defaultModel?: string;
+  defaultInferenceConfig?: ModelInferenceConfig;
   fetchFn?: typeof fetch;
 }
 
 export class NebiusModelClient implements ModelClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly defaultModel?: string;
+  private readonly defaultInferenceConfig?: ModelInferenceConfig;
   private readonly fetchFn: typeof fetch;
 
   constructor(options: NebiusClientOptions = {}) {
@@ -27,10 +32,76 @@ export class NebiusModelClient implements ModelClient {
     this.apiKey = apiKey;
     const base = options.baseUrl ?? 'https://api.tokenfactory.nebius.com/v1';
     this.baseUrl = base.replace(/\/+$/, '');
+    this.defaultModel = options.defaultModel;
+    this.defaultInferenceConfig = options.defaultInferenceConfig;
     this.fetchFn = options.fetchFn ?? globalThis.fetch;
   }
 
+  /**
+   * Retrieves available model identifiers from Nebius Token Factory GET /v1/models.
+   */
+  async listModels(): Promise<string[]> {
+    const endpoint = `${this.baseUrl}/models`;
+    let response: Response;
+    try {
+      response = await this.fetchFn(endpoint, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+      });
+    } catch (err: unknown) {
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const safeMessage = this.redactApiKey(rawMessage);
+      throw new Error(`Nebius API network request failed: ${safeMessage}`);
+    }
+
+    if (!response.ok) {
+      let errorBody = '';
+      try {
+        errorBody = await response.text();
+      } catch {
+        // ignore body read error
+      }
+      const safeBody = this.redactApiKey(errorBody);
+      throw new Error(
+        `Nebius API models listing failed with status ${response.status}: ${safeBody}`
+      );
+    }
+
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error('Nebius API returned invalid JSON response for models list');
+    }
+
+    if (!Array.isArray(data?.data)) {
+      throw new Error('Nebius API models response missing data array');
+    }
+
+    return data.data
+      .map((item: any) => (typeof item?.id === 'string' ? item.id.trim() : ''))
+      .filter((id: string) => id.length > 0);
+  }
+
+  /**
+   * Checks whether a specific model identifier is available in Nebius Token Factory.
+   */
+  async isModelAvailable(modelId: string): Promise<boolean> {
+    if (!modelId || typeof modelId !== 'string') return false;
+    const models = await this.listModels();
+    return models.includes(modelId.trim());
+  }
+
   async complete(request: ModelRequest): Promise<ModelResponse> {
+    const model = request.model || this.defaultModel;
+    if (!model) {
+      throw new Error(
+        'Model identifier is required. Specify model in ModelRequest or configure defaultModel in NebiusClientOptions.'
+      );
+    }
+
     const endpoint = `${this.baseUrl}/chat/completions`;
 
     const openAiMessages = request.messages.map((msg) => {
@@ -62,20 +133,23 @@ export class NebiusModelClient implements ModelClient {
     });
 
     const body: Record<string, unknown> = {
-      model: request.model,
+      model,
       messages: openAiMessages,
     };
 
-    if (request.temperature !== undefined) {
-      body.temperature = request.temperature;
+    const temperature = request.temperature ?? this.defaultInferenceConfig?.temperature;
+    if (temperature !== undefined) {
+      body.temperature = temperature;
     }
 
-    if (request.maxTokens !== undefined) {
-      body.max_tokens = request.maxTokens;
+    const maxTokens = request.maxTokens ?? this.defaultInferenceConfig?.maxTokens;
+    if (maxTokens !== undefined) {
+      body.max_tokens = maxTokens;
     }
 
-    if (request.stop && request.stop.length > 0) {
-      body.stop = request.stop;
+    const stop = request.stop ?? this.defaultInferenceConfig?.stop;
+    if (stop && stop.length > 0) {
+      body.stop = stop;
     }
 
     if (request.tools && request.tools.length > 0) {
@@ -162,7 +236,8 @@ export class NebiusModelClient implements ModelClient {
 
     return {
       id: data.id ?? '',
-      model: data.model ?? request.model,
+      provider: 'nebius',
+      model: data.model ?? model,
       message: responseMessage,
       finishReason: this.mapFinishReason(choice.finish_reason),
       ...(data.usage
