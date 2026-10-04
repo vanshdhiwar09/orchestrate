@@ -11,6 +11,7 @@ import type {
   VerificationStatus,
 } from '@orchestrate/verification';
 import type { AgentRunInput, AgentRunResult } from './runner.js';
+import type { ToolRegistry } from './tools.js';
 
 export interface TaskAgentRunner {
   run(input: AgentRunInput): Promise<AgentRunResult>;
@@ -21,7 +22,8 @@ export interface TaskContextCompiler {
 }
 
 export interface TaskVerificationEngine {
-  run(plan: VerificationPlan): Promise<VerificationResult>;
+  verify?(plan: VerificationPlan): Promise<VerificationResult>;
+  run?(plan: VerificationPlan): Promise<VerificationResult>;
 }
 
 export interface OrchestratorOptions {
@@ -29,6 +31,7 @@ export interface OrchestratorOptions {
   runner: TaskAgentRunner;
   verificationEngine: TaskVerificationEngine;
   compiler?: TaskContextCompiler;
+  toolRegistry?: ToolRegistry;
 }
 
 export interface OrchestrateTaskInput {
@@ -38,6 +41,9 @@ export interface OrchestrateTaskInput {
   tags?: string[];
   verificationPlan: VerificationPlan;
   model?: string;
+  toolRegistry?: ToolRegistry;
+  temperature?: number;
+  maxTokens?: number;
 }
 
 export interface OrchestrationResult {
@@ -59,6 +65,7 @@ export class Orchestrator {
   private readonly runner: TaskAgentRunner;
   private readonly verificationEngine: TaskVerificationEngine;
   private readonly compiler: TaskContextCompiler;
+  private readonly toolRegistry?: ToolRegistry;
 
   constructor(options: OrchestratorOptions) {
     if (!options?.brain) {
@@ -75,6 +82,7 @@ export class Orchestrator {
     this.runner = options.runner;
     this.verificationEngine = options.verificationEngine;
     this.compiler = options.compiler ?? new ContextCompiler({ brain: options.brain });
+    this.toolRegistry = options.toolRegistry;
   }
 
   /**
@@ -108,7 +116,7 @@ export class Orchestrator {
       throw new Error(`Orchestrator: Task "${taskId}" does not belong to project "${projectId}".`);
     }
 
-    // Verify upstream task if provided
+    // Verify upstream task if provided and load verified state from Brain
     let upstreamTaskId: string | undefined;
     if (input.upstreamTaskId) {
       upstreamTaskId = input.upstreamTaskId.trim();
@@ -121,6 +129,9 @@ export class Orchestrator {
           `Orchestrator: Upstream task "${upstreamTaskId}" does not belong to project "${projectId}".`
         );
       }
+      // Load upstream task verified history and trust state from Brain
+      await this.brain.deriveTaskTrustState(upstreamTaskId);
+      await this.brain.getTaskHistory(upstreamTaskId);
     }
 
     // 2. Determine next attempt number
@@ -141,12 +152,16 @@ export class Orchestrator {
     // 4. Serialize compiled context
     const serializedContext = ContextSerializer.serialize(compiledContext);
 
-    // 5. Run AgentRunner
+    // 5. Run AgentRunner with tools (WITHOUT passing upstream raw message history)
     const promptTask = task.description ? `${task.title}\n\n${task.description}` : task.title;
+    const effectiveToolRegistry = input.toolRegistry ?? this.toolRegistry;
     const agentResult = await this.runner.run({
       task: promptTask,
       systemPrompt: serializedContext,
       model: input.model,
+      toolRegistry: effectiveToolRegistry,
+      ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+      ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
     });
 
     // 6. Convert agent result into a Handoff with status CLAIMED
@@ -159,23 +174,49 @@ export class Orchestrator {
     let limitations: string[] = [];
     let recommendedFollowUp: string[] = [];
 
+    let parsed: any = null;
     try {
-      const parsed = JSON.parse(content);
-      if (parsed && typeof parsed === 'object') {
-        if (typeof parsed.summary === 'string') summary = parsed.summary;
-        if (typeof parsed.changes === 'string') changes = parsed.changes;
-        if (Array.isArray(parsed.filesAffected)) filesAffected = parsed.filesAffected.map(String);
-        if (Array.isArray(parsed.decisionsCreated)) {
-          decisionsCreated = parsed.decisionsCreated.map(String);
-        }
-        if (Array.isArray(parsed.assumptions)) assumptions = parsed.assumptions.map(String);
-        if (Array.isArray(parsed.limitations)) limitations = parsed.limitations.map(String);
-        if (Array.isArray(parsed.recommendedFollowUp)) {
-          recommendedFollowUp = parsed.recommendedFollowUp.map(String);
+      parsed = JSON.parse(content);
+    } catch {
+      const jsonBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (jsonBlockMatch) {
+        try {
+          parsed = JSON.parse(jsonBlockMatch[1]);
+        } catch {
+          // Plain text
         }
       }
-    } catch {
-      // Content is plain text
+    }
+
+    if (parsed && typeof parsed === 'object') {
+      if (typeof parsed.summary === 'string') summary = parsed.summary;
+      if (typeof parsed.changes === 'string') changes = parsed.changes;
+      if (Array.isArray(parsed.filesAffected)) filesAffected = parsed.filesAffected.map(String);
+      if (Array.isArray(parsed.decisionsCreated)) {
+        decisionsCreated = parsed.decisionsCreated.map(String);
+      }
+      if (Array.isArray(parsed.assumptions)) assumptions = parsed.assumptions.map(String);
+      if (Array.isArray(parsed.limitations)) limitations = parsed.limitations.map(String);
+      if (Array.isArray(parsed.recommendedFollowUp)) {
+        recommendedFollowUp = parsed.recommendedFollowUp.map(String);
+      }
+    }
+
+    // If filesAffected was not specified, infer affected files from write_file tool calls
+    if (filesAffected.length === 0 && Array.isArray(agentResult?.messages)) {
+      const affectedSet = new Set<string>();
+      for (const msg of agentResult.messages) {
+        if (msg.role === 'assistant' && Array.isArray(msg.toolCalls)) {
+          for (const tc of msg.toolCalls) {
+            if (tc.name === 'write_file' && tc.arguments && typeof tc.arguments.path === 'string') {
+              affectedSet.add(tc.arguments.path);
+            }
+          }
+        }
+      }
+      if (affectedSet.size > 0) {
+        filesAffected = Array.from(affectedSet).sort((a, b) => a.localeCompare(b));
+      }
     }
 
     if (!summary.trim()) {
@@ -203,7 +244,20 @@ export class Orchestrator {
     const persistedHandoff = await this.brain.addHandoff(handoff);
 
     // 8. Run VerificationEngine using supplied VerificationPlan
-    const verificationResult = await this.verificationEngine.run(input.verificationPlan);
+    const runVerification =
+      typeof this.verificationEngine.verify === 'function'
+        ? this.verificationEngine.verify.bind(this.verificationEngine)
+        : typeof this.verificationEngine.run === 'function'
+          ? this.verificationEngine.run.bind(this.verificationEngine)
+          : null;
+
+    if (!runVerification) {
+      throw new Error(
+        'Orchestrator: verificationEngine must provide either a verify() or run() method.'
+      );
+    }
+
+    const verificationResult = await runVerification(input.verificationPlan);
 
     // 9. Persist VerificationRecord in Brain
     const recordId = `verif-${task.id}-a${attemptNumber}-${Date.now()}`;

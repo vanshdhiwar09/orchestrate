@@ -19,6 +19,8 @@ Orchestrate bridges the gap between raw model inference and reliable software en
 - **`Project Brain`** — Stores structured project state, task handoffs, and evidence-backed knowledge.
 - **`Context Compiler`** — Selects and compacts relevant project state into deterministic context envelopes for downstream tasks.
 
+For a detailed walkthrough of the complete lifecycle and Task A → Task B handoff, see [`docs/END_TO_END_ENGINEERING_FLOW.md`](./docs/END_TO_END_ENGINEERING_FLOW.md).
+
 ---
 
 ## Model Selection & Control Architecture
@@ -170,6 +172,7 @@ Selected Nebius Model
 
 ## Documentation
 
+- [`docs/END_TO_END_ENGINEERING_FLOW.md`](./docs/END_TO_END_ENGINEERING_FLOW.md) — Comprehensive guide to the end-to-end engineering flow (Task → Agent Execution → Code Change → Handoff → Independent Verification → Project Brain → Context Compiler → Dependent Agent)
 - [`docs/NEBIUS_MODEL_SELECTION_AND_CONTROL.md`](./docs/NEBIUS_MODEL_SELECTION_AND_CONTROL.md) — Architecture decision on Nebius model selection & benchmark control
 - [`docs/EXPERIMENT_PROTOCOL.md`](./docs/EXPERIMENT_PROTOCOL.md) — Benchmark experiment methodology and evaluation protocols
 - [`docs/TRIAL_RUN_CONTRACT.md`](./docs/TRIAL_RUN_CONTRACT.md) — Benchmark trial lifecycle, failure taxonomy, and contracts

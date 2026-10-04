@@ -4,5 +4,13 @@
     "rootDir": "./src",
     "outDir": "./dist"
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../../packages/brain" },
+    { "path": "../../packages/compiler" },
+    { "path": "../../packages/core" },
+    { "path": "../../packages/model" },
+    { "path": "../../packages/verification" },
+    { "path": "../../packages/workspace" }
+  ]
 }

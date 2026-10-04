@@ -2,5 +2,18 @@
   "name": "@orchestrate/engine",
   "version": "0.1.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@orchestrate/brain": "*",
+    "@orchestrate/compiler": "*",
+    "@orchestrate/core": "*",
+    "@orchestrate/model": "*",
+    "@orchestrate/verification": "*",
+    "@orchestrate/workspace": "*"
+  }
 }
