@@ -6,7 +6,7 @@ import type {
   ModelResponse,
 } from '@orchestrate/model';
 import type { CommandExecutor, ExecuteCommandOptions, ExecuteCommandResult, Workspace } from '@orchestrate/workspace';
-import { AgentRunner } from '../src/runner.js';
+import { AgentExecutionError, AgentRunner } from '../src/runner.js';
 import { createDefaultToolRegistry, ToolRegistry } from '../src/tools.js';
 
 
@@ -587,5 +587,122 @@ describe('AgentRunner', () => {
     // AgentRunner itself should not know anything about processes:
     // it simply passes tool input and output through the ToolRegistry.
     expect(fakeClient.requests.length).toBe(2);
+  });
+
+  it('accumulates multi-turn token usage and measures execution duration across iterations', async () => {
+    const workspace = new FakeWorkspace();
+    const registry = createDefaultToolRegistry({ workspace });
+
+    const turn1Response: ModelResponse = {
+      id: 'resp-turn-1',
+      model: 'test-model',
+      finishReason: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-write-1',
+            name: 'write_file',
+            arguments: { path: 'hello.txt', content: 'world' },
+          },
+        ],
+      },
+      usage: {
+        promptTokens: 120,
+        completionTokens: 30,
+        totalTokens: 150,
+      },
+    };
+
+    const turn2Response: ModelResponse = {
+      id: 'resp-turn-2',
+      model: 'test-model',
+      finishReason: 'stop',
+      message: {
+        role: 'assistant',
+        content: 'I have written hello.txt.',
+      },
+      usage: {
+        promptTokens: 200,
+        completionTokens: 45,
+        totalTokens: 245,
+      },
+    };
+
+    const fakeClient = new FakeModelClient([turn1Response, turn2Response]);
+    const runner = new AgentRunner({
+      modelClient: fakeClient,
+      defaultModel: 'test-model',
+      toolRegistry: registry,
+    });
+
+    const result = await runner.run({ task: 'Write hello.txt' });
+
+    expect(result.iterations).toBe(2);
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    expect(result.usage).toBeDefined();
+    expect(result.usage?.usage_available).toBe(true);
+    expect(result.usage?.input_tokens).toBe(320); // 120 + 200
+    expect(result.usage?.output_tokens).toBe(75); // 30 + 45
+    expect(result.usage?.total_tokens).toBe(395); // 150 + 245
+  });
+
+  it('preserves accumulated partial usage when an iteration fails midway', async () => {
+    const workspace = new FakeWorkspace();
+    const registry = createDefaultToolRegistry({ workspace });
+
+    const turn1Response: ModelResponse = {
+      id: 'resp-turn-1',
+      model: 'test-model',
+      finishReason: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-write-1',
+            name: 'write_file',
+            arguments: { path: 'partial.txt', content: 'draft' },
+          },
+        ],
+      },
+      usage: {
+        promptTokens: 100,
+        completionTokens: 25,
+        totalTokens: 125,
+      },
+    };
+
+    // Client fails on turn 2
+    let callCount = 0;
+    const failingClient: ModelClient = {
+      async complete() {
+        callCount++;
+        if (callCount === 1) return turn1Response;
+        throw new Error('Rate limit exceeded on turn 2');
+      },
+    };
+
+    const runner = new AgentRunner({
+      modelClient: failingClient,
+      defaultModel: 'test-model',
+      toolRegistry: registry,
+    });
+
+    try {
+      await runner.run({ task: 'Do work' });
+      expect.unreachable('Should have thrown an error');
+    } catch (err: unknown) {
+      expect(err).toBeInstanceOf(AgentExecutionError);
+      const execErr = err as AgentExecutionError;
+      expect(execErr.message).toContain('Rate limit exceeded on turn 2');
+      expect(execErr.iterations).toBe(2);
+      expect(execErr.usage).toBeDefined();
+      expect(execErr.usage?.usage_available).toBe(true);
+      expect(execErr.usage?.input_tokens).toBe(100);
+      expect(execErr.usage?.output_tokens).toBe(25);
+      expect(execErr.usage?.total_tokens).toBe(125);
+    }
   });
 });

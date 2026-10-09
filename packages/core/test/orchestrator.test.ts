@@ -410,4 +410,152 @@ describe('Orchestrator', () => {
     expect(fromBrain?.id).toBe(result.verificationRecordId);
     expect(fromBrain?.handoffId).toBe(result.handoffId);
   });
+
+  it('notifies telemetrySink on task start and completion and propagates usage and durationMs', async () => {
+    const startedSpans: any[] = [];
+    const completedSpans: any[] = [];
+
+    const telemetrySink = {
+      async onTaskStart(span: any) {
+        startedSpans.push(span);
+      },
+      async onTaskComplete(span: any) {
+        completedSpans.push(span);
+      },
+    };
+
+    const runner: TaskAgentRunner = {
+      async run(): Promise<AgentRunResult> {
+        return {
+          response: {
+            id: 'resp-1',
+            model: 'test-model',
+            finishReason: 'stop',
+            message: {
+              role: 'assistant',
+              content: 'Task completed successfully',
+            },
+          },
+          messages: [],
+          iterations: 1,
+          durationMs: 150,
+          usage: {
+            input_tokens: 120,
+            output_tokens: 45,
+            total_tokens: 165,
+            estimated_cost_usd: 0,
+            usage_available: true,
+          },
+        };
+      },
+    };
+
+    const verificationResult = createPassingVerificationResult();
+    const verificationEngine: TaskVerificationEngine = {
+      async verify(): Promise<VerificationResult> {
+        return verificationResult;
+      },
+    };
+
+    const orchestrator = new Orchestrator({
+      brain,
+      runner,
+      verificationEngine,
+      telemetrySink,
+    });
+
+    const result = await orchestrator.executeTask({
+      projectId: 'proj-1',
+      taskId: 'task-1',
+      verificationPlan: defaultPlan,
+    });
+
+    expect(result.status).toBe('VERIFIED');
+    expect(result.durationMs).toBeGreaterThanOrEqual(0);
+    expect(result.usage).toEqual({
+      input_tokens: 120,
+      output_tokens: 45,
+      total_tokens: 165,
+      estimated_cost_usd: 0,
+      usage_available: true,
+    });
+
+    expect(startedSpans).toHaveLength(1);
+    expect(startedSpans[0].taskId).toBe('task-1');
+    expect(startedSpans[0].projectId).toBe('proj-1');
+
+    expect(completedSpans).toHaveLength(1);
+    expect(completedSpans[0].taskId).toBe('task-1');
+    expect(completedSpans[0].status).toBe('VERIFIED');
+    expect(completedSpans[0].usage?.total_tokens).toBe(165);
+    expect(completedSpans[0].handoffId).toBe(result.handoffId);
+  });
+
+  it('preserves partial usage and invokes task-scoped telemetrySink on runner failure', async () => {
+    const startedSpans: any[] = [];
+    const completedSpans: any[] = [];
+
+    const rootSink = {
+      forTask(context: { projectId: string; taskId: string; attemptNumber: number }) {
+        return {
+          async onTaskStart(span: any) {
+            startedSpans.push({ ...span, context });
+          },
+          async onTaskComplete(span: any) {
+            completedSpans.push({ ...span, context });
+          },
+        };
+      },
+    };
+
+    const failingRunner: TaskAgentRunner = {
+      async run(): Promise<AgentRunResult> {
+        const error: any = new Error('Model rate limited on turn 3');
+        error.usage = {
+          input_tokens: 300,
+          output_tokens: 80,
+          total_tokens: 380,
+          estimated_cost_usd: 0,
+          usage_available: true,
+        };
+        throw error;
+      },
+    };
+
+    const verificationEngine: TaskVerificationEngine = {
+      async verify(): Promise<VerificationResult> {
+        return createPassingVerificationResult();
+      },
+    };
+
+    const orchestrator = new Orchestrator({
+      brain,
+      runner: failingRunner,
+      verificationEngine,
+      telemetrySink: rootSink as any,
+    });
+
+    await expect(
+      orchestrator.executeTask({
+        projectId: 'proj-1',
+        taskId: 'task-1',
+        verificationPlan: defaultPlan,
+      })
+    ).rejects.toThrow('Model rate limited on turn 3');
+
+    expect(startedSpans).toHaveLength(1);
+    expect(startedSpans[0].context.taskId).toBe('task-1');
+
+    expect(completedSpans).toHaveLength(1);
+    expect(completedSpans[0].taskId).toBe('task-1');
+    expect(completedSpans[0].status).toBe('FAILED');
+    expect(completedSpans[0].error).toContain('Model rate limited on turn 3');
+    expect(completedSpans[0].usage).toEqual({
+      input_tokens: 300,
+      output_tokens: 80,
+      total_tokens: 380,
+      estimated_cost_usd: 0,
+      usage_available: true,
+    });
+  });
 });

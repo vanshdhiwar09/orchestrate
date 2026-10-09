@@ -12,6 +12,7 @@
     "@orchestrate/brain": "*",
     "@orchestrate/compiler": "*",
     "@orchestrate/model": "*",
+    "@orchestrate/telemetry": "*",
     "@orchestrate/verification": "*",
     "@orchestrate/workspace": "*"
   }

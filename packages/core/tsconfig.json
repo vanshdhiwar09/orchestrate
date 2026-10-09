@@ -9,6 +9,7 @@
     { "path": "../brain" },
     { "path": "../compiler" },
     { "path": "../model" },
+    { "path": "../telemetry" },
     { "path": "../verification" },
     { "path": "../workspace" }
   ]

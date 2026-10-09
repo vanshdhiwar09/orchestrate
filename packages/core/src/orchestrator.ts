@@ -5,6 +5,11 @@ import {
   type CompiledContext,
   ContextSerializer,
 } from '@orchestrate/compiler';
+import {
+  type ExecutionUsage,
+  InstrumentedToolRegistry,
+  type TelemetrySink,
+} from '@orchestrate/telemetry';
 import type {
   VerificationPlan,
   VerificationResult,
@@ -32,6 +37,7 @@ export interface OrchestratorOptions {
   verificationEngine: TaskVerificationEngine;
   compiler?: TaskContextCompiler;
   toolRegistry?: ToolRegistry;
+  telemetrySink?: TelemetrySink;
 }
 
 export interface OrchestrateTaskInput {
@@ -44,6 +50,7 @@ export interface OrchestrateTaskInput {
   toolRegistry?: ToolRegistry;
   temperature?: number;
   maxTokens?: number;
+  telemetrySink?: TelemetrySink;
 }
 
 export interface OrchestrationResult {
@@ -54,6 +61,8 @@ export interface OrchestrationResult {
   status: VerificationStatus;
   handoff: Handoff;
   verificationResult: VerificationResult;
+  usage?: ExecutionUsage;
+  durationMs?: number;
 }
 
 /**
@@ -66,6 +75,7 @@ export class Orchestrator {
   private readonly verificationEngine: TaskVerificationEngine;
   private readonly compiler: TaskContextCompiler;
   private readonly toolRegistry?: ToolRegistry;
+  private readonly telemetrySink?: TelemetrySink;
 
   constructor(options: OrchestratorOptions) {
     if (!options?.brain) {
@@ -83,6 +93,7 @@ export class Orchestrator {
     this.verificationEngine = options.verificationEngine;
     this.compiler = options.compiler ?? new ContextCompiler({ brain: options.brain });
     this.toolRegistry = options.toolRegistry;
+    this.telemetrySink = options.telemetrySink;
   }
 
   /**
@@ -140,6 +151,32 @@ export class Orchestrator {
       history.length > 0 ? Math.max(...history.map((a) => a.attemptNumber)) : 0;
     const attemptNumber = highestAttempt + 1;
 
+    // Telemetry task span lifecycle start
+    const rawTelemetrySink = input.telemetrySink ?? this.telemetrySink;
+    const telemetrySink = (rawTelemetrySink && typeof rawTelemetrySink.forTask === 'function')
+      ? rawTelemetrySink.forTask({ projectId, taskId, attemptNumber })
+      : rawTelemetrySink;
+    const taskStartedAt = new Date().toISOString();
+    const taskStartTimeMs = performance.now();
+
+    if (telemetrySink?.onTaskStart) {
+      try {
+        await telemetrySink.onTaskStart({
+          projectId,
+          taskId,
+          attemptNumber,
+          upstreamTaskId,
+          model: input.model,
+          temperature: input.temperature,
+          maxTokens: input.maxTokens,
+          tags: input.tags,
+          startedAt: taskStartedAt,
+        });
+      } catch {
+        // Telemetry error isolation: sink failures must never crash task execution
+      }
+    }
+
     // 3. Compile relevant context
     const compilationRequest: CompilationRequest = {
       projectId,
@@ -154,15 +191,52 @@ export class Orchestrator {
 
     // 5. Run AgentRunner with tools (WITHOUT passing upstream raw message history)
     const promptTask = task.description ? `${task.title}\n\n${task.description}` : task.title;
-    const effectiveToolRegistry = input.toolRegistry ?? this.toolRegistry;
-    const agentResult = await this.runner.run({
-      task: promptTask,
-      systemPrompt: serializedContext,
-      model: input.model,
-      toolRegistry: effectiveToolRegistry,
-      ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
-      ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
-    });
+    let effectiveToolRegistry = input.toolRegistry ?? this.toolRegistry;
+    if (telemetrySink && effectiveToolRegistry && !(effectiveToolRegistry instanceof InstrumentedToolRegistry)) {
+      effectiveToolRegistry = new InstrumentedToolRegistry(effectiveToolRegistry, {
+        telemetrySink,
+        projectId,
+        taskId,
+        attemptNumber,
+      }) as unknown as ToolRegistry;
+    }
+
+    let agentResult: AgentRunResult;
+    try {
+      agentResult = await this.runner.run({
+        task: promptTask,
+        systemPrompt: serializedContext,
+        model: input.model,
+        toolRegistry: effectiveToolRegistry,
+        ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+        ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+      });
+    } catch (err: unknown) {
+      const partialUsage = (err && typeof err === 'object' && 'usage' in err)
+        ? (err as { usage?: ExecutionUsage }).usage
+        : undefined;
+
+      if (telemetrySink?.onTaskComplete) {
+        try {
+          await telemetrySink.onTaskComplete({
+            projectId,
+            taskId,
+            attemptNumber,
+            upstreamTaskId,
+            model: input.model,
+            startedAt: taskStartedAt,
+            completedAt: new Date().toISOString(),
+            durationMs: Math.round(performance.now() - taskStartTimeMs),
+            status: 'FAILED',
+            error: err instanceof Error ? err.message : String(err),
+            usage: partialUsage,
+          });
+        } catch {
+          // Telemetry error isolation
+        }
+      }
+      throw err;
+    }
 
     // 6. Convert agent result into a Handoff with status CLAIMED
     const content = agentResult?.response?.message?.content || '';
@@ -271,6 +345,31 @@ export class Orchestrator {
     };
     const persistedRecord = await this.brain.addVerificationRecord(record);
 
+    // Telemetry task span lifecycle complete
+    const taskCompletedAt = new Date().toISOString();
+    const totalDurationMs = Math.round(performance.now() - taskStartTimeMs);
+
+    if (telemetrySink?.onTaskComplete) {
+      try {
+        await telemetrySink.onTaskComplete({
+          projectId,
+          taskId,
+          attemptNumber,
+          upstreamTaskId,
+          model: input.model,
+          startedAt: taskStartedAt,
+          completedAt: taskCompletedAt,
+          durationMs: totalDurationMs,
+          status: verificationResult.status,
+          handoffId: persistedHandoff.id,
+          verificationRecordId: persistedRecord.id,
+          usage: agentResult?.usage,
+        });
+      } catch {
+        // Telemetry error isolation
+      }
+    }
+
     // 10. Return structured OrchestrationResult
     return {
       taskId: task.id,
@@ -280,6 +379,8 @@ export class Orchestrator {
       status: verificationResult.status,
       handoff: persistedHandoff,
       verificationResult,
+      usage: agentResult?.usage,
+      durationMs: totalDurationMs,
     };
   }
 }
