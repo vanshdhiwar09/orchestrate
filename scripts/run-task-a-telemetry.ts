@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { MemoryProjectBrain } from '@orchestrate/brain';
 import { ContextCompiler } from '@orchestrate/compiler';
 import {
@@ -13,9 +14,103 @@ import { NebiusModelClient } from '@orchestrate/model';
 import {
   InstrumentedModelClient,
   LangSmithTracer,
+  sanitizeSecretText,
 } from '@orchestrate/telemetry';
 import { VerificationEngine, type VerificationPlan } from '@orchestrate/verification';
 import { LocalCommandExecutor, LocalWorkspace } from '@orchestrate/workspace';
+
+export interface DiagnosticCheckEvidence {
+  checkId?: string;
+  name?: string;
+  exitCode?: number | null;
+  timedOut?: boolean;
+  signal?: string | null;
+  stdout?: string;
+  stderr?: string;
+}
+
+export interface DiagnosticHandoff {
+  filesAffected?: string[];
+  status?: string;
+  summary?: string;
+}
+
+export interface VerificationDiagnosticReport {
+  exitCodeSnippet: string;
+  timedOutSnippet: string;
+  signalSnippet: string;
+  filesAffectedSnippet: string;
+  stderrSnippet: string;
+  stdoutSnippet: string;
+}
+
+/**
+ * Truncates and sanitizes command output to prevent secret leakage and terminal flooding.
+ */
+export function formatBoundedOutput(
+  text: string | null | undefined,
+  maxLength = 300,
+  customSecrets?: string[]
+): string {
+  if (!text || typeof text !== 'string') {
+    return 'none';
+  }
+  const sanitized = sanitizeSecretText(text, customSecrets).trim();
+  if (!sanitized) {
+    return 'none';
+  }
+  if (sanitized.length <= maxLength) {
+    return sanitized;
+  }
+  return `${sanitized.slice(0, maxLength)}... [TRUNCATED]`;
+}
+
+/**
+ * Formats structured verification failure diagnostics safely without throwing.
+ */
+export function formatVerificationFailure(
+  evidence?: DiagnosticCheckEvidence | null,
+  handoff?: DiagnosticHandoff | null,
+  customSecrets?: string[]
+): VerificationDiagnosticReport {
+  let exitCodeSnippet = 'unknown';
+  if (evidence && typeof evidence.exitCode === 'number') {
+    exitCodeSnippet = String(evidence.exitCode);
+  } else if (evidence && evidence.exitCode === null) {
+    exitCodeSnippet = 'null';
+  }
+
+  let timedOutSnippet = 'unknown';
+  if (evidence && typeof evidence.timedOut === 'boolean') {
+    timedOutSnippet = String(evidence.timedOut);
+  }
+
+  const signalSnippet = evidence?.signal ? String(evidence.signal) : 'none';
+
+  let filesAffectedSnippet = 'none reported';
+  if (Array.isArray(handoff?.filesAffected) && handoff.filesAffected.length > 0) {
+    filesAffectedSnippet = handoff.filesAffected.join(', ');
+  }
+
+  const stderrSnippet = formatBoundedOutput(evidence?.stderr, 300, customSecrets);
+  const stdoutSnippet = formatBoundedOutput(evidence?.stdout, 300, customSecrets);
+
+  return {
+    exitCodeSnippet,
+    timedOutSnippet,
+    signalSnippet,
+    filesAffectedSnippet,
+    stderrSnippet,
+    stdoutSnippet,
+  };
+}
+
+/**
+ * Determines whether a workspace directory should be retained or deleted.
+ */
+export function shouldRetainWorkspace(taskVerificationPassed: boolean): boolean {
+  return !taskVerificationPassed;
+}
 
 const EXPECTED_APAC_ENDPOINT = 'https://apac.api.smith.langchain.com';
 const FIXED_NEBIUS_MODEL = 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B';
@@ -215,161 +310,195 @@ async function main(): Promise<void> {
     };
 
     console.log('\n[EXECUTION] Executing Task A via Orchestrator with live inference...');
-    orchestratorResult = await orchestrator.executeTask({
-      projectId,
-      taskId,
-      verificationPlan,
-      model: FIXED_NEBIUS_MODEL,
-    });
-  } catch (err: unknown) {
-    if (err && typeof err === 'object') {
-      const errorObj = err as Record<string, unknown>;
-      const rawName = typeof errorObj.name === 'string' ? errorObj.name : '';
-      taskErrorCategory = ALLOWED_ERROR_CATEGORIES.has(rawName) ? rawName : 'UnknownError';
+    try {
+      orchestratorResult = await orchestrator.executeTask({
+        projectId,
+        taskId,
+        verificationPlan,
+        model: FIXED_NEBIUS_MODEL,
+      });
+    } catch (err: unknown) {
+      if (err && typeof err === 'object') {
+        const errorObj = err as Record<string, unknown>;
+        const rawName = typeof errorObj.name === 'string' ? errorObj.name : '';
+        taskErrorCategory = ALLOWED_ERROR_CATEGORIES.has(rawName) ? rawName : 'UnknownError';
 
-      const candidateStatus =
-        errorObj.status ??
-        errorObj.statusCode ??
-        (errorObj.cause && typeof errorObj.cause === 'object'
-          ? (errorObj.cause as Record<string, unknown>).status ?? (errorObj.cause as Record<string, unknown>).statusCode
-          : undefined) ??
-        (errorObj.response && typeof errorObj.response === 'object'
-          ? (errorObj.response as Record<string, unknown>).status ?? (errorObj.response as Record<string, unknown>).statusCode
-          : undefined);
+        const candidateStatus =
+          errorObj.status ??
+          errorObj.statusCode ??
+          (errorObj.cause && typeof errorObj.cause === 'object'
+            ? (errorObj.cause as Record<string, unknown>).status ?? (errorObj.cause as Record<string, unknown>).statusCode
+            : undefined) ??
+          (errorObj.response && typeof errorObj.response === 'object'
+            ? (errorObj.response as Record<string, unknown>).status ?? (errorObj.response as Record<string, unknown>).statusCode
+            : undefined);
 
-      if (
-        typeof candidateStatus === 'number' &&
-        Number.isInteger(candidateStatus) &&
-        candidateStatus >= 100 &&
-        candidateStatus <= 599
-      ) {
-        taskErrorStatus = candidateStatus;
-      } else if (typeof errorObj.message === 'string') {
-        const match = errorObj.message.match(/\bstatus\s+(\d{3})\b/i);
-        if (match) {
-          const parsed = Number.parseInt(match[1], 10);
-          if (parsed >= 100 && parsed <= 599) {
-            taskErrorStatus = parsed;
+        if (
+          typeof candidateStatus === 'number' &&
+          Number.isInteger(candidateStatus) &&
+          candidateStatus >= 100 &&
+          candidateStatus <= 599
+        ) {
+          taskErrorStatus = candidateStatus;
+        } else if (typeof errorObj.message === 'string') {
+          const match = errorObj.message.match(/\bstatus\s+(\d{3})\b/i);
+          if (match) {
+            const parsed = Number.parseInt(match[1], 10);
+            if (parsed >= 100 && parsed <= 599) {
+              taskErrorStatus = parsed;
+            }
           }
         }
+      } else {
+        taskErrorCategory = 'UnknownError';
+      }
+    }
+
+    // ── SECTION A: Independent Verification Outcome ──
+    console.log('\n========================================');
+    console.log(' SECTION A: INDEPENDENT TASK VERIFICATION');
+    console.log('========================================');
+
+    if (orchestratorResult) {
+      const trustState = await brain.deriveTaskTrustState(taskId);
+      const checks = orchestratorResult.verificationResult?.checks ?? [];
+      const checkEvidence = checks[0];
+
+      const hasPassingCheck =
+        checks.length === 1 &&
+        checkEvidence?.checkId === 'check-greeting-module' &&
+        checkEvidence?.passed === true &&
+        checkEvidence?.exitCode === 0 &&
+        checkEvidence?.timedOut === false;
+
+      console.log(`[EVIDENCE] Verification Status: ${orchestratorResult.status}`);
+      console.log(`[EVIDENCE] Handoff Status: ${orchestratorResult.handoff?.status}`);
+      console.log(`[EVIDENCE] Check Status: ${hasPassingCheck ? 'PASSED (exitCode: 0, timedOut: false)' : 'FAILED'}`);
+      console.log(`[EVIDENCE] Project Brain Trust State: ${trustState}`);
+
+      if (hasPassingCheck && orchestratorResult.status === 'VERIFIED' && trustState === 'VERIFIED') {
+        taskVerificationPassed = true;
+      } else {
+        taskVerificationPassed = false;
+        const customSecrets = [nebiusApiKey, langsmithApiKey].filter(Boolean) as string[];
+        const diag = formatVerificationFailure(checkEvidence, orchestratorResult.handoff, customSecrets);
+
+        console.log('\n--- VERIFICATION FAILURE DIAGNOSTICS ---');
+        console.log(`[DIAGNOSTIC] Exit Code:      ${diag.exitCodeSnippet}`);
+        console.log(`[DIAGNOSTIC] Timed Out:      ${diag.timedOutSnippet}`);
+        console.log(`[DIAGNOSTIC] Signal:         ${diag.signalSnippet}`);
+        console.log(`[DIAGNOSTIC] Files Affected: ${diag.filesAffectedSnippet}`);
+        console.log(`[DIAGNOSTIC] Stderr:         ${diag.stderrSnippet}`);
+        if (diag.stdoutSnippet !== 'none') {
+          console.log(`[DIAGNOSTIC] Stdout:         ${diag.stdoutSnippet}`);
+        }
+        console.log('----------------------------------------');
       }
     } else {
-      taskErrorCategory = 'UnknownError';
+      const statusSnippet = taskErrorStatus !== undefined ? ` (HTTP ${taskErrorStatus})` : '';
+      const categorySnippet = taskErrorCategory ? ` (Category: ${taskErrorCategory}${statusSnippet})` : '';
+      console.error(`[EVIDENCE] Task Execution: FAILED${categorySnippet}`);
+      taskVerificationPassed = false;
+    }
+
+    // ── SECTION B: Telemetry & Observability Outcome ──
+    console.log('\n========================================');
+    console.log(' SECTION B: TELEMETRY & OBSERVABILITY');
+    console.log('========================================');
+
+    // Structural Lifecycle Validation Assertions
+    const allEndpointsValid =
+      recordedRequests.length > 0 &&
+      recordedRequests.every((r) => r.isApacEndpoint && r.isExpectedPath);
+
+    const allRequestsSucceeded =
+      recordedRequests.length > 0 &&
+      recordedRequests.every((r) => r.ok && r.status >= 200 && r.status < 300);
+
+    const rootPostRequests = recordedRequests.filter(
+      (r) => r.method === 'POST' && r.runType === 'chain' && !r.parentRunId
+    );
+    const rootRunId = rootPostRequests[0]?.runId;
+
+    const modelChildRequests = recordedRequests.filter(
+      (r) => r.method === 'POST' && r.runType === 'llm' && Boolean(r.parentRunId) && r.parentRunId === rootRunId
+    );
+
+    const toolChildRequests = recordedRequests.filter(
+      (r) => r.method === 'POST' && r.runType === 'tool' && Boolean(r.parentRunId) && r.parentRunId === rootRunId
+    );
+
+    const patchRequests = recordedRequests.filter((r) => r.method === 'PATCH');
+    const patchMatchesRoot =
+      patchRequests.length === 1 && Boolean(rootRunId) && patchRequests[0].patchTargetId === rootRunId;
+
+    const zeroTelemetryErrors = telemetryErrorCount === 0;
+
+    const hasExactRootPost = rootPostRequests.length === 1 && Boolean(rootRunId);
+    const hasAtLeastOneModelChild = modelChildRequests.length >= 1;
+    const hasAtLeastOneToolChild = toolChildRequests.length >= 1;
+    const hasExactRootPatch = patchRequests.length === 1;
+
+    console.log(`[TELEMETRY] APAC Host & Path Validation: ${allEndpointsValid ? 'VERIFIED' : 'FAILED'}`);
+    console.log(`[TELEMETRY] Root Chain POST: ${hasExactRootPost ? 'OK (HTTP 2xx)' : 'FAILED'}`);
+    console.log(`[TELEMETRY] Child LLM POSTs: ${hasAtLeastOneModelChild ? `OK (${modelChildRequests.length} run(s))` : 'FAILED'}`);
+    console.log(`[TELEMETRY] Child Tool POSTs: ${hasAtLeastOneToolChild ? `OK (${toolChildRequests.length} run(s))` : 'FAILED'}`);
+    console.log(`[TELEMETRY] Root PATCH Close: ${hasExactRootPatch ? 'OK (HTTP 2xx)' : 'FAILED'}`);
+    console.log(`[TELEMETRY] Trace Correlation: ${patchMatchesRoot ? 'VERIFIED (matched root task ID)' : 'FAILED'}`);
+    console.log(`[TELEMETRY] All HTTP 2xx: ${allRequestsSucceeded ? 'PASSED' : 'FAILED'}`);
+    console.log(`[TELEMETRY] Telemetry Errors: ${zeroTelemetryErrors ? '0 (Clean)' : `${telemetryErrorCount} error(s)`}`);
+
+    const telemetryPassed =
+      allEndpointsValid &&
+      allRequestsSucceeded &&
+      hasExactRootPost &&
+      hasAtLeastOneModelChild &&
+      hasAtLeastOneToolChild &&
+      hasExactRootPatch &&
+      patchMatchesRoot &&
+      zeroTelemetryErrors;
+
+    // ── FINAL VALIDATION SUMMARY ──
+    console.log('\n========================================');
+    console.log(' FINAL VALIDATION SUMMARY');
+    console.log('========================================');
+    console.log(`Task Engineering Verification: ${taskVerificationPassed ? 'PASSED (VERIFIED)' : 'FAILED'}`);
+    console.log(`Telemetry Export to LangSmith:  ${telemetryPassed ? 'PASSED (Lifecycle Verified)' : 'FAILED'}`);
+
+    if (taskVerificationPassed && telemetryPassed) {
+      console.log('\n[SUCCESS] M8.2 Task A Real Telemetry Validation Succeeded.');
+      process.exit(0);
+    } else {
+      console.error('\n[FAILURE] Validation did not satisfy all criteria.');
+      process.exit(1);
     }
   } finally {
-    // Guaranteed cleanup on every exit path
+    // Workspace cleanup: delete automatically on verification success, preserve on failure
     if (tempDir) {
-      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      if (shouldRetainWorkspace(taskVerificationPassed)) {
+        console.log('\n========================================');
+        console.log(' WORKSPACE PRESERVATION (FAILURE DIAGNOSTIC)');
+        console.log('========================================');
+        console.log(`[DIAGNOSTIC] Workspace preserved for offline inspection: ${tempDir}`);
+        console.log('[DIAGNOSTIC] Note: No credentials or .env files are stored in the workspace.');
+        console.log('[DIAGNOSTIC] Manual cleanup command:');
+        console.log(`  PowerShell: Remove-Item -Recurse -Force "${tempDir}"`);
+        console.log(`  POSIX:      rm -rf "${tempDir}"`);
+      } else {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
-  }
-
-  // ── SECTION A: Independent Verification Outcome ──
-  console.log('\n========================================');
-  console.log(' SECTION A: INDEPENDENT TASK VERIFICATION');
-  console.log('========================================');
-
-  if (orchestratorResult) {
-    const trustState = await brain.deriveTaskTrustState(taskId);
-    const checks = orchestratorResult.verificationResult?.checks ?? [];
-    const checkEvidence = checks[0];
-
-    const hasPassingCheck =
-      checks.length === 1 &&
-      checkEvidence?.checkId === 'check-greeting-module' &&
-      checkEvidence?.passed === true &&
-      checkEvidence?.exitCode === 0 &&
-      checkEvidence?.timedOut === false;
-
-    console.log(`[EVIDENCE] Verification Status: ${orchestratorResult.status}`);
-    console.log(`[EVIDENCE] Handoff Status: ${orchestratorResult.handoff?.status}`);
-    console.log(`[EVIDENCE] Check Status: ${hasPassingCheck ? 'PASSED (exitCode: 0, timedOut: false)' : 'FAILED'}`);
-    console.log(`[EVIDENCE] Project Brain Trust State: ${trustState}`);
-
-    taskVerificationPassed =
-      orchestratorResult.status === 'VERIFIED' &&
-      trustState === 'VERIFIED' &&
-      hasPassingCheck;
-  } else {
-    const statusSnippet = taskErrorStatus !== undefined ? ` (HTTP ${taskErrorStatus})` : '';
-    const categorySnippet = taskErrorCategory ? ` (Category: ${taskErrorCategory}${statusSnippet})` : '';
-    console.error(`[EVIDENCE] Task Execution: FAILED${categorySnippet}`);
-    taskVerificationPassed = false;
-  }
-
-  // ── SECTION B: Telemetry & Observability Outcome ──
-  console.log('\n========================================');
-  console.log(' SECTION B: TELEMETRY & OBSERVABILITY');
-  console.log('========================================');
-
-  // Structural Lifecycle Validation Assertions
-  const allEndpointsValid =
-    recordedRequests.length > 0 &&
-    recordedRequests.every((r) => r.isApacEndpoint && r.isExpectedPath);
-
-  const allRequestsSucceeded =
-    recordedRequests.length > 0 &&
-    recordedRequests.every((r) => r.ok && r.status >= 200 && r.status < 300);
-
-  const rootPostRequests = recordedRequests.filter(
-    (r) => r.method === 'POST' && r.runType === 'chain' && !r.parentRunId
-  );
-  const rootRunId = rootPostRequests[0]?.runId;
-
-  const modelChildRequests = recordedRequests.filter(
-    (r) => r.method === 'POST' && r.runType === 'llm' && Boolean(r.parentRunId) && r.parentRunId === rootRunId
-  );
-
-  const toolChildRequests = recordedRequests.filter(
-    (r) => r.method === 'POST' && r.runType === 'tool' && Boolean(r.parentRunId) && r.parentRunId === rootRunId
-  );
-
-  const patchRequests = recordedRequests.filter((r) => r.method === 'PATCH');
-  const patchMatchesRoot =
-    patchRequests.length === 1 && Boolean(rootRunId) && patchRequests[0].patchTargetId === rootRunId;
-
-  const zeroTelemetryErrors = telemetryErrorCount === 0;
-
-  const hasExactRootPost = rootPostRequests.length === 1 && Boolean(rootRunId);
-  const hasAtLeastOneModelChild = modelChildRequests.length >= 1;
-  const hasAtLeastOneToolChild = toolChildRequests.length >= 1;
-  const hasExactRootPatch = patchRequests.length === 1;
-
-  console.log(`[TELEMETRY] APAC Host & Path Validation: ${allEndpointsValid ? 'VERIFIED' : 'FAILED'}`);
-  console.log(`[TELEMETRY] Root Chain POST: ${hasExactRootPost ? 'OK (HTTP 2xx)' : 'FAILED'}`);
-  console.log(`[TELEMETRY] Child LLM POSTs: ${hasAtLeastOneModelChild ? `OK (${modelChildRequests.length} run(s))` : 'FAILED'}`);
-  console.log(`[TELEMETRY] Child Tool POSTs: ${hasAtLeastOneToolChild ? `OK (${toolChildRequests.length} run(s))` : 'FAILED'}`);
-  console.log(`[TELEMETRY] Root PATCH Close: ${hasExactRootPatch ? 'OK (HTTP 2xx)' : 'FAILED'}`);
-  console.log(`[TELEMETRY] Trace Correlation: ${patchMatchesRoot ? 'VERIFIED (matched root task ID)' : 'FAILED'}`);
-  console.log(`[TELEMETRY] All HTTP 2xx: ${allRequestsSucceeded ? 'PASSED' : 'FAILED'}`);
-  console.log(`[TELEMETRY] Telemetry Errors: ${zeroTelemetryErrors ? '0 (Clean)' : `${telemetryErrorCount} error(s)`}`);
-
-  const telemetryPassed =
-    allEndpointsValid &&
-    allRequestsSucceeded &&
-    hasExactRootPost &&
-    hasAtLeastOneModelChild &&
-    hasAtLeastOneToolChild &&
-    hasExactRootPatch &&
-    patchMatchesRoot &&
-    zeroTelemetryErrors;
-
-  // ── FINAL VALIDATION SUMMARY ──
-  console.log('\n========================================');
-  console.log(' FINAL VALIDATION SUMMARY');
-  console.log('========================================');
-  console.log(`Task Engineering Verification: ${taskVerificationPassed ? 'PASSED (VERIFIED)' : 'FAILED'}`);
-  console.log(`Telemetry Export to LangSmith:  ${telemetryPassed ? 'PASSED (Lifecycle Verified)' : 'FAILED'}`);
-
-  if (taskVerificationPassed && telemetryPassed) {
-    console.log('\n[SUCCESS] M8.2 Task A Real Telemetry Validation Succeeded.');
-    process.exit(0);
-  } else {
-    console.error('\n[FAILURE] Validation did not satisfy all criteria.');
-    process.exit(1);
   }
 }
 
-main().catch(() => {
-  console.error('[UNCAUGHT ERROR] Validation failed due to an unexpected fatal error.');
-  process.exit(1);
-});
+const isDirectExecution =
+  typeof process !== 'undefined' &&
+  Boolean(process.argv?.[1]) &&
+  resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
+
+if (isDirectExecution) {
+  main().catch(() => {
+    console.error('[UNCAUGHT ERROR] Validation failed due to an unexpected fatal error.');
+    process.exit(1);
+  });
+}
