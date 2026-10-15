@@ -45,6 +45,7 @@ import {
   type ReworkEvaluator,
 } from '../evaluator/index.js';
 import type { ArtifactManifest } from '../manifest/types.js';
+import { resolveSuppliedContextForArm } from './context-derivation.js';
 
 /**
  * Maps raw tool invocation events to DiscoveryEvents according to M5/M7 discovery contract.
@@ -62,6 +63,84 @@ export function mapToolEventsToDiscovery(
     const rawToolName = event.toolName?.trim() || '';
     const toolName = rawToolName.toLowerCase();
     const args = event.arguments ?? {};
+
+    // Structured read-only Git inspection via execute_command
+    if (toolName === 'execute_command') {
+      if (
+        args &&
+        typeof args === 'object' &&
+        typeof (args as any).command === 'string' &&
+        (args as any).command.trim().toLowerCase() === 'git' &&
+        Array.isArray((args as any).args)
+      ) {
+        const gitArgs = (args as any).args;
+        const subCommand = typeof gitArgs[0] === 'string' ? gitArgs[0].trim().toLowerCase() : '';
+        if (subCommand === 'status') {
+          events.push({
+            sequence: event.sequence,
+            toolName: rawToolName,
+            target: 'status',
+            category: 'GIT_STATE',
+          });
+          continue;
+        } else if (subCommand === 'log') {
+          let ref: string | null =
+            typeof (args as any).ref === 'string' ? (args as any).ref : null;
+          if (!ref) {
+            for (let i = 1; i < gitArgs.length; i++) {
+              const a = gitArgs[i];
+              if (typeof a === 'string') {
+                const trimmed = a.trim();
+                if (trimmed.startsWith('-')) {
+                  if (trimmed === '-n' || trimmed === '--max-count' || trimmed === '--skip') {
+                    i++;
+                  }
+                  continue;
+                }
+                if (/^\d+$/.test(trimmed)) {
+                  continue;
+                }
+                ref = trimmed;
+                break;
+              }
+            }
+          }
+          events.push({
+            sequence: event.sequence,
+            toolName: rawToolName,
+            target: ref || 'HEAD',
+            category: 'GIT_HISTORY',
+          });
+          continue;
+        } else if (subCommand === 'diff') {
+          let ref: string | null =
+            typeof (args as any).ref === 'string' ? (args as any).ref : null;
+          if (!ref) {
+            for (let i = 1; i < gitArgs.length; i++) {
+              const a = gitArgs[i];
+              if (typeof a === 'string') {
+                const trimmed = a.trim();
+                if (trimmed.startsWith('-')) {
+                  if (trimmed === '-U' || trimmed === '--unified') {
+                    i++;
+                  }
+                  continue;
+                }
+                ref = trimmed;
+                break;
+              }
+            }
+          }
+          events.push({
+            sequence: event.sequence,
+            toolName: rawToolName,
+            target: ref || '',
+            category: 'GIT_DIFF',
+          });
+          continue;
+        }
+      }
+    }
 
     // Excluded execution/mutation/verification tools
     if (NON_QUALIFYING_TOOLS.has(toolName)) {
@@ -424,7 +503,9 @@ export class TrialRunner {
         const discoveryEvaluator =
           this.dependencies.discoveryEvaluator ?? new DefaultDiscoveryEvaluator();
         const { events, unclassifiedEvents } = mapToolEventsToDiscovery(rawEvidence.toolEvents);
-        const supplied = input.suppliedContext?.[armId] ?? [];
+        const envelope = armRecord.input.contextEnvelope;
+        const explicitSupplied = input.suppliedContext?.[armId];
+        const supplied = resolveSuppliedContextForArm(armId, envelope, explicitSupplied);
         discoveryReport = discoveryEvaluator.evaluate({
           taskId: input.identity.taskBId,
           suppliedContext: supplied,

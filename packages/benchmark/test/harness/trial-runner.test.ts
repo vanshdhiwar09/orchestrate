@@ -1139,5 +1139,548 @@ describe('TrialRunner Orchestration (M7 Phase 4.2)', () => {
       expect(unclassifiedEvents[1].toolName).toBe('run_command');
       expect(unclassifiedEvents[2].toolName).toBe('run_command');
     });
+
+    // M7 Fix 2: Structured execute_command Git inspection mapping
+    it('maps execute_command with git status to GIT_STATE', () => {
+      const toolEvents: ToolCallEvent[] = [
+        {
+          sequence: 1,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['status'] },
+          result: 'clean',
+          success: true,
+          durationMs: 5,
+        },
+        {
+          sequence: 2,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['status', '--porcelain'] },
+          result: 'clean',
+          success: true,
+          durationMs: 5,
+        },
+      ];
+      const { events, unclassifiedEvents } = mapToolEventsToDiscovery(toolEvents);
+      expect(events).toHaveLength(2);
+      expect(events[0].category).toBe('GIT_STATE');
+      expect(events[0].target).toBe('status');
+      expect(events[1].category).toBe('GIT_STATE');
+      expect(events[1].target).toBe('status');
+      expect(unclassifiedEvents).toHaveLength(0);
+    });
+
+    it('maps execute_command with git log to GIT_HISTORY', () => {
+      const toolEvents: ToolCallEvent[] = [
+        {
+          sequence: 1,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['log'] },
+          result: 'commits',
+          success: true,
+          durationMs: 10,
+        },
+        {
+          sequence: 2,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['log', '-n', '5'] },
+          result: 'commits',
+          success: true,
+          durationMs: 10,
+        },
+        {
+          sequence: 3,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['log', 'main'] },
+          result: 'commits',
+          success: true,
+          durationMs: 10,
+        },
+      ];
+      const { events } = mapToolEventsToDiscovery(toolEvents);
+      expect(events).toHaveLength(3);
+      expect(events[0].category).toBe('GIT_HISTORY');
+      expect(events[0].target).toBe('HEAD');
+      expect(events[1].category).toBe('GIT_HISTORY');
+      expect(events[1].target).toBe('HEAD');
+      expect(events[2].category).toBe('GIT_HISTORY');
+      expect(events[2].target).toBe('main');
+    });
+
+    it('maps execute_command with git diff to GIT_DIFF', () => {
+      const toolEvents: ToolCallEvent[] = [
+        {
+          sequence: 1,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['diff'] },
+          result: '',
+          success: true,
+          durationMs: 10,
+        },
+        {
+          sequence: 2,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['diff', 'HEAD~1'] },
+          result: '',
+          success: true,
+          durationMs: 10,
+        },
+      ];
+      const { events } = mapToolEventsToDiscovery(toolEvents);
+      expect(events).toHaveLength(2);
+      expect(events[0].category).toBe('GIT_DIFF');
+      expect(events[0].target).toBe('');
+      expect(events[1].category).toBe('GIT_DIFF');
+      expect(events[1].target).toBe('HEAD~1');
+    });
+
+    it('non-inspection git commands remain non-qualifying and unclassified', () => {
+      const toolEvents: ToolCallEvent[] = [
+        {
+          sequence: 1,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['commit', '-m', 'fix'] },
+          result: 'committed',
+          success: true,
+          durationMs: 15,
+        },
+        {
+          sequence: 2,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['push', 'origin', 'main'] },
+          result: 'pushed',
+          success: true,
+          durationMs: 20,
+        },
+        {
+          sequence: 3,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['checkout', '-b', 'feat'] },
+          result: 'checked out',
+          success: true,
+          durationMs: 10,
+        },
+        {
+          sequence: 4,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: ['add', '.'] },
+          result: 'added',
+          success: true,
+          durationMs: 5,
+        },
+      ];
+      const { events, unclassifiedEvents } = mapToolEventsToDiscovery(toolEvents);
+      expect(events).toHaveLength(0);
+      expect(unclassifiedEvents).toHaveLength(4);
+      for (const u of unclassifiedEvents) {
+        expect(u.toolName).toBe('execute_command');
+      }
+    });
+
+    it('malformed command arguments do not crash the mapper and remain unclassified', () => {
+      const toolEvents: ToolCallEvent[] = [
+        {
+          sequence: 1,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: {} as any,
+          result: 'err',
+          success: false,
+          durationMs: 1,
+        },
+        {
+          sequence: 2,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git' } as any, // missing args array
+          result: 'err',
+          success: false,
+          durationMs: 1,
+        },
+        {
+          sequence: 3,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: 'not-an-array' } as any,
+          result: 'err',
+          success: false,
+          durationMs: 1,
+        },
+        {
+          sequence: 4,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'git', args: [] }, // empty args array
+          result: 'err',
+          success: false,
+          durationMs: 1,
+        },
+        {
+          sequence: 5,
+          type: 'TOOL_CALL',
+          toolName: 'execute_command',
+          arguments: { command: 'npm', args: ['test'] }, // non-git command
+          result: 'err',
+          success: false,
+          durationMs: 1,
+        },
+      ];
+      const { events, unclassifiedEvents } = mapToolEventsToDiscovery(toolEvents);
+      expect(events).toHaveLength(0);
+      expect(unclassifiedEvents).toHaveLength(5);
+    });
+
+    it('dedicated git tools retain their current behavior', () => {
+      const toolEvents: ToolCallEvent[] = [
+        {
+          sequence: 1,
+          type: 'TOOL_CALL',
+          toolName: 'git_status',
+          arguments: {},
+          result: 'clean',
+          success: true,
+          durationMs: 5,
+        },
+        {
+          sequence: 2,
+          type: 'TOOL_CALL',
+          toolName: 'git_log',
+          arguments: { ref: 'HEAD~2' },
+          result: 'log',
+          success: true,
+          durationMs: 8,
+        },
+        {
+          sequence: 3,
+          type: 'TOOL_CALL',
+          toolName: 'git_diff',
+          arguments: { ref: 'main' },
+          result: 'diff',
+          success: true,
+          durationMs: 7,
+        },
+      ];
+      const { events } = mapToolEventsToDiscovery(toolEvents);
+      expect(events).toHaveLength(3);
+      expect(events[0].category).toBe('GIT_STATE');
+      expect(events[0].target).toBe('status');
+      expect(events[1].category).toBe('GIT_HISTORY');
+      expect(events[1].target).toBe('HEAD~2');
+      expect(events[2].category).toBe('GIT_DIFF');
+      expect(events[2].target).toBe('main');
+    });
+  });
+
+  describe('TrialRunner Automatic Context Derivation Integration (M7 Fix 1)', () => {
+    it('automatically derives supplied context across arms, distinguishing Arm A vs B vs C', async () => {
+      const { factory } = createMockWorkspaceFactory();
+      const evaluatedContexts: Record<string, any[]> = {};
+
+      // Tool events perform reads on:
+      // 1. src/jwt.ts (supplied to Arm B in handoff and Arm C in compiled context)
+      // 2. src/unrelated.ts (not supplied to any arm)
+      const mockToolEvents: ToolCallEvent[] = [
+        {
+          sequence: 1,
+          type: 'TOOL_CALL',
+          toolName: 'read_file',
+          arguments: { path: 'src/jwt.ts' },
+          result: 'export function verifyToken() {}',
+          success: true,
+          durationMs: 10,
+        },
+        {
+          sequence: 2,
+          type: 'TOOL_CALL',
+          toolName: 'read_file',
+          arguments: { path: 'src/unrelated.ts' },
+          result: 'const x = 1;',
+          success: true,
+          durationMs: 10,
+        },
+      ];
+
+      const mockDiscoveryEvaluator = {
+        evaluate: vi.fn((input) => {
+          evaluatedContexts[input.taskId] = evaluatedContexts[input.taskId] ?? [];
+          evaluatedContexts[input.taskId].push(input);
+          return new DefaultDiscoveryEvaluator().evaluate(input);
+        }),
+      };
+
+      const runner = new TrialRunner({
+        snapshotRepo: createMockSnapshotRepo(),
+        workspaceFactory: factory,
+        modelClient: createMockModelClient(),
+        agentAdapter: {
+          execute: async (input) => {
+            const ws = await factory.create(input.snapshotCommitSha);
+            return {
+              evidence: createSampleRawEvidence(input.armId, ws.path, 'COMPLETED', mockToolEvents),
+              workspace: ws,
+            };
+          },
+        } as unknown as AgentExecutionAdapter,
+        verificationAdapter: {
+          verify: async (input) => createSampleVerificationEvidence(input.armId, input.workspace.path),
+        } as unknown as VerificationAdapter,
+        discoveryEvaluator: mockDiscoveryEvaluator,
+      });
+
+      const trialInput: RunTrialInput = {
+        identity: validIdentity,
+        taskBPrompt: 'Implement the protected authentication endpoint according to requirements.',
+        // Arm B handoff mentions src/jwt.ts
+        armBUnverifiedHandoff: 'Task A completed JWT middleware and created src/jwt.ts.',
+        // Arm C compiled context XML contains src/jwt.ts
+        armCCompiledContext: '<orchestrate_context><upstream_work task_id="task-a" trust_state="VERIFIED" attempt="1"><files_affected><file>src/jwt.ts</file></files_affected></upstream_work></orchestrate_context>',
+        controls: dummyControls,
+        environmentDependencyFingerprint: 'node:22.0.0|npm:10.0.0|os:win32',
+        verificationChecks: [
+          {
+            name: 'unit_tests',
+            command: 'npm test',
+            timeoutMs: 30000,
+          },
+        ],
+        // Note: suppliedContext is completely omitted here to test automatic derivation
+      };
+
+      const result = await runner.runTrial(trialInput);
+
+      expect(result.valid).toBe(true);
+      expect(result.trial.state).toBe('COMPLETE');
+
+      const armAResult = result.armResults.ARM_A_BASELINE;
+      const armBResult = result.armResults.ARM_B_UNVERIFIED_HANDOFF;
+      const armCResult = result.armResults.ARM_C_ORCHESTRATE;
+
+      // Arm A has no context envelope -> derives []
+      // Both reads are discovery actions -> discovery_actions = 2
+      expect(armAResult?.discoveryReport?.discovery_actions).toBe(2);
+      expect(armAResult?.discoveryReport?.suppliedHits).toHaveLength(0);
+
+      // Arm B handoff supplied src/jwt.ts -> read of src/jwt.ts is a supplied hit
+      // Read of src/unrelated.ts is discovery -> discovery_actions = 1
+      expect(armBResult?.discoveryReport?.discovery_actions).toBe(1);
+      expect(armBResult?.discoveryReport?.suppliedHits).toHaveLength(1);
+      expect(armBResult?.discoveryReport?.suppliedHits[0].target).toBe('src/jwt.ts');
+
+      // Arm C compiled context supplied src/jwt.ts -> read of src/jwt.ts is a supplied hit
+      // Read of src/unrelated.ts is discovery -> discovery_actions = 1
+      expect(armCResult?.discoveryReport?.discovery_actions).toBe(1);
+      expect(armCResult?.discoveryReport?.suppliedHits).toHaveLength(1);
+      expect(armCResult?.discoveryReport?.suppliedHits[0].target).toBe('src/jwt.ts');
+    });
+
+    it('fails trial when context-bearing arm envelope is malformed XML', async () => {
+      const { factory } = createMockWorkspaceFactory();
+
+      const runner = new TrialRunner({
+        snapshotRepo: createMockSnapshotRepo(),
+        workspaceFactory: factory,
+        modelClient: createMockModelClient(),
+        agentAdapter: {
+          execute: async (input) => {
+            const ws = await factory.create(input.snapshotCommitSha);
+            return {
+              evidence: createSampleRawEvidence(input.armId, ws.path, 'COMPLETED', []),
+              workspace: ws,
+            };
+          },
+        } as unknown as AgentExecutionAdapter,
+        verificationAdapter: {
+          verify: async (input) => createSampleVerificationEvidence(input.armId, input.workspace.path),
+        } as unknown as VerificationAdapter,
+      });
+
+      const trialInput: RunTrialInput = {
+        identity: validIdentity,
+        taskBPrompt: 'Implement the protected authentication endpoint according to requirements.',
+        armBUnverifiedHandoff: 'Task A notes',
+        // Malformed unclosed XML
+        armCCompiledContext: '<orchestrate_context><file>src/jwt.ts</orchestrate_context>',
+        controls: dummyControls,
+        environmentDependencyFingerprint: 'node:22.0.0|npm:10.0.0|os:win32',
+        verificationChecks: [
+          {
+            name: 'unit_tests',
+            command: 'npm test',
+            timeoutMs: 30000,
+          },
+        ],
+      };
+
+      const result = await runner.runTrial(trialInput);
+
+      expect(result.valid).toBe(false);
+      expect(result.trial.state).toBe('INVALID');
+      expect(result.invalidationReason).toContain('Malformed XML');
+    });
+
+    it('fails trial when explicit suppliedContext claims an absent reference', async () => {
+      const { factory } = createMockWorkspaceFactory();
+
+      const runner = new TrialRunner({
+        snapshotRepo: createMockSnapshotRepo(),
+        workspaceFactory: factory,
+        modelClient: createMockModelClient(),
+        agentAdapter: {
+          execute: async (input) => {
+            const ws = await factory.create(input.snapshotCommitSha);
+            return {
+              evidence: createSampleRawEvidence(input.armId, ws.path, 'COMPLETED', []),
+              workspace: ws,
+            };
+          },
+        } as unknown as AgentExecutionAdapter,
+        verificationAdapter: {
+          verify: async (input) => createSampleVerificationEvidence(input.armId, input.workspace.path),
+        } as unknown as VerificationAdapter,
+      });
+
+      const trialInput: RunTrialInput = {
+        identity: validIdentity,
+        taskBPrompt: 'Implement the protected authentication endpoint according to requirements.',
+        armBUnverifiedHandoff: 'Task A created src/jwt.ts.',
+        armCCompiledContext: '<orchestrate_context><file>src/jwt.ts</file></orchestrate_context>',
+        controls: dummyControls,
+        environmentDependencyFingerprint: 'node:22.0.0|npm:10.0.0|os:win32',
+        verificationChecks: [
+          {
+            name: 'unit_tests',
+            command: 'npm test',
+            timeoutMs: 30000,
+          },
+        ],
+        suppliedContext: {
+          // Fraudulent claim: claims src/fraudulent.ts which was never in Arm B's envelope
+          ARM_B_UNVERIFIED_HANDOFF: [{ type: 'FILE', value: 'src/fraudulent.ts' }],
+        },
+      };
+
+      const result = await runner.runTrial(trialInput);
+
+      expect(result.valid).toBe(false);
+      expect(result.trial.state).toBe('INVALID');
+      expect(result.invalidationReason).toContain('absent from the delivered context envelope');
+    });
+
+    it('repeated reads of unsupplied file count every time, repeated reads of supplied file remain exempt', async () => {
+      const { factory } = createMockWorkspaceFactory();
+
+      // Tool events: 3 reads of supplied file, 3 reads of unsupplied file
+      const mockToolEvents: ToolCallEvent[] = [
+        {
+          sequence: 1,
+          type: 'TOOL_CALL',
+          toolName: 'read_file',
+          arguments: { path: 'src/jwt.ts' },
+          result: 'code',
+          success: true,
+          durationMs: 5,
+        },
+        {
+          sequence: 2,
+          type: 'TOOL_CALL',
+          toolName: 'read_file',
+          arguments: { path: 'src/jwt.ts' },
+          result: 'code',
+          success: true,
+          durationMs: 5,
+        },
+        {
+          sequence: 3,
+          type: 'TOOL_CALL',
+          toolName: 'read_file',
+          arguments: { path: 'src/jwt.ts' },
+          result: 'code',
+          success: true,
+          durationMs: 5,
+        },
+        {
+          sequence: 4,
+          type: 'TOOL_CALL',
+          toolName: 'read_file',
+          arguments: { path: 'src/unknown.ts' },
+          result: 'code',
+          success: true,
+          durationMs: 5,
+        },
+        {
+          sequence: 5,
+          type: 'TOOL_CALL',
+          toolName: 'read_file',
+          arguments: { path: 'src/unknown.ts' },
+          result: 'code',
+          success: true,
+          durationMs: 5,
+        },
+        {
+          sequence: 6,
+          type: 'TOOL_CALL',
+          toolName: 'read_file',
+          arguments: { path: 'src/unknown.ts' },
+          result: 'code',
+          success: true,
+          durationMs: 5,
+        },
+      ];
+
+      const runner = new TrialRunner({
+        snapshotRepo: createMockSnapshotRepo(),
+        workspaceFactory: factory,
+        modelClient: createMockModelClient(),
+        agentAdapter: {
+          execute: async (input) => {
+            const ws = await factory.create(input.snapshotCommitSha);
+            return {
+              evidence: createSampleRawEvidence(input.armId, ws.path, 'COMPLETED', mockToolEvents),
+              workspace: ws,
+            };
+          },
+        } as unknown as AgentExecutionAdapter,
+        verificationAdapter: {
+          verify: async (input) => createSampleVerificationEvidence(input.armId, input.workspace.path),
+        } as unknown as VerificationAdapter,
+      });
+
+      const trialInput: RunTrialInput = {
+        identity: validIdentity,
+        taskBPrompt: 'Implement the protected authentication endpoint according to requirements.',
+        armBUnverifiedHandoff: 'Created src/jwt.ts',
+        armCCompiledContext: '<orchestrate_context><file>src/jwt.ts</file></orchestrate_context>',
+        controls: dummyControls,
+        environmentDependencyFingerprint: 'node:22.0.0|npm:10.0.0|os:win32',
+        verificationChecks: [
+          {
+            name: 'unit_tests',
+            command: 'npm test',
+            timeoutMs: 30000,
+          },
+        ],
+      };
+
+      const result = await runner.runTrial(trialInput);
+
+      expect(result.valid).toBe(true);
+
+      const armB = result.armResults.ARM_B_UNVERIFIED_HANDOFF;
+      // 3 reads of src/jwt.ts are suppliedHits, 3 reads of src/unknown.ts are discovery_actions
+      expect(armB?.discoveryReport?.discovery_actions).toBe(3);
+      expect(armB?.discoveryReport?.suppliedHits).toHaveLength(3);
+      expect(armB?.discoveryReport?.summary.qualifyingCount).toBe(3);
+      expect(armB?.discoveryReport?.summary.suppliedHitCount).toBe(3);
+    });
   });
 });

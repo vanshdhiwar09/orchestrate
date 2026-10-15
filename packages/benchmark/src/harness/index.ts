@@ -14,3 +14,4 @@ export * from './verification-adapter.js';
 export * from './integrity-guard.js';
 export * from './trial-state-machine.js';
 export * from './trial-runner.js';
+export * from './context-derivation.js';
