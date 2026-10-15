@@ -3,7 +3,16 @@ export const REDACTED_PLACEHOLDER = '[REDACTED]';
 const SECRET_KEY_REGEX =
   /^(.*_)?(api_?keys?|secrets?|tokens?|passwords?|passwd|pwd|auth|authorization|private_keys?|credentials?|jwt|bearer)(_.*)?$/i;
 
-const EXEMPT_KEY_NAMES = new Set(['name', 'toolName', 'type', 'format', 'role']);
+const EXEMPT_KEY_NAMES = new Set([
+  'name',
+  'toolName',
+  'type',
+  'format',
+  'role',
+  'input_tokens',
+  'output_tokens',
+  'total_tokens',
+]);
 
 /**
  * Sanitizes plain text by redacting embedded secrets, bearer tokens, and credentials.

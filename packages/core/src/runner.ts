@@ -98,7 +98,7 @@ export class AgentRunner {
       input_tokens: totalInputTokens,
       output_tokens: totalOutputTokens,
       total_tokens: totalTokens,
-      estimated_cost_usd: 0,
+      estimated_cost_usd: null,
       usage_available: hasRecordedUsage,
     });
 

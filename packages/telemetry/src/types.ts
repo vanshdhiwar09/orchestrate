@@ -9,7 +9,7 @@ export interface ExecutionUsage {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
-  estimated_cost_usd: number;
+  estimated_cost_usd: number | null;
   usage_available: boolean;
 }
 

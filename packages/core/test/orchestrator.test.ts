@@ -443,7 +443,7 @@ describe('Orchestrator', () => {
             input_tokens: 120,
             output_tokens: 45,
             total_tokens: 165,
-            estimated_cost_usd: 0,
+            estimated_cost_usd: null,
             usage_available: true,
           },
         };
@@ -476,7 +476,7 @@ describe('Orchestrator', () => {
       input_tokens: 120,
       output_tokens: 45,
       total_tokens: 165,
-      estimated_cost_usd: 0,
+      estimated_cost_usd: null,
       usage_available: true,
     });
 
@@ -515,7 +515,7 @@ describe('Orchestrator', () => {
           input_tokens: 300,
           output_tokens: 80,
           total_tokens: 380,
-          estimated_cost_usd: 0,
+          estimated_cost_usd: null,
           usage_available: true,
         };
         throw error;
@@ -554,7 +554,7 @@ describe('Orchestrator', () => {
       input_tokens: 300,
       output_tokens: 80,
       total_tokens: 380,
-      estimated_cost_usd: 0,
+      estimated_cost_usd: null,
       usage_available: true,
     });
   });

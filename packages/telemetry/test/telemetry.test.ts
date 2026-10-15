@@ -93,6 +93,48 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
         'value',
       ]);
     });
+
+    it('preserves numeric usage metrics while redacting actual credentials and auth tokens', () => {
+      expect(isSecretKey('input_tokens')).toBe(false);
+      expect(isSecretKey('output_tokens')).toBe(false);
+      expect(isSecretKey('total_tokens')).toBe(false);
+      expect(isSecretKey('api_key')).toBe(true);
+      expect(isSecretKey('auth_token')).toBe(true);
+      expect(isSecretKey('access_token')).toBe(true);
+      expect(isSecretKey('tokens')).toBe(true);
+
+      const usageMetadata = {
+        provider: 'nebius',
+        model: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
+        api_key: 'secret-nebius-key',
+        auth_token: 'bearer-token-1234',
+        access_token: 'ghp_secrettokenvalue1234567890',
+        usage: {
+          input_tokens: 523,
+          output_tokens: 84,
+          total_tokens: 607,
+          estimated_cost_usd: null,
+          usage_available: true,
+        },
+      };
+
+      const cleaned = redactSecrets(usageMetadata);
+      expect(cleaned.provider).toBe('nebius');
+      expect(cleaned.model).toBe('nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B');
+      expect(cleaned.api_key).toBe(REDACTED_PLACEHOLDER);
+      expect(cleaned.auth_token).toBe(REDACTED_PLACEHOLDER);
+      expect(cleaned.access_token).toBe(REDACTED_PLACEHOLDER);
+      expect(cleaned.usage).toEqual({
+        input_tokens: 523,
+        output_tokens: 84,
+        total_tokens: 607,
+        estimated_cost_usd: null,
+        usage_available: true,
+      });
+      expect(typeof cleaned.usage.input_tokens).toBe('number');
+      expect(typeof cleaned.usage.output_tokens).toBe('number');
+      expect(typeof cleaned.usage.total_tokens).toBe('number');
+    });
   });
 
   describe('InstrumentedModelClient', () => {
@@ -142,7 +184,9 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
       expect(events[0].sequence).toBe(1);
       expect(events[1].sequence).toBe(2);
       expect(events[0].usage.input_tokens).toBe(100);
+      expect(events[0].usage.estimated_cost_usd).toBeNull();
       expect(events[1].usage.input_tokens).toBe(200);
+      expect(events[1].usage.estimated_cost_usd).toBeNull();
 
       // Cumulative usage
       const aggregate = client.getAggregateUsage();
@@ -150,6 +194,37 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
       expect(aggregate.input_tokens).toBe(300); // 100 + 200
       expect(aggregate.output_tokens).toBe(150); // 50 + 100
       expect(aggregate.total_tokens).toBe(450); // 150 + 300
+      expect(aggregate.estimated_cost_usd).toBeNull();
+    });
+
+    it('handles absent model usage with usage_available: false and estimated_cost_usd: null', async () => {
+      const client = new InstrumentedModelClient({
+        modelClient: {
+          async complete(): Promise<ModelResponse> {
+            return {
+              id: 'resp-no-usage',
+              model: 'test-model',
+              message: { role: 'assistant', content: 'no usage' },
+            };
+          },
+        },
+      });
+
+      const res = await client.complete({
+        model: 'test-model',
+        messages: [{ role: 'user', content: 'hello' }],
+      });
+      expect(res.id).toBe('resp-no-usage');
+
+      const events = client.getEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].usage.usage_available).toBe(false);
+      expect(events[0].usage.estimated_cost_usd).toBeNull();
+      expect(events[0].usage.input_tokens).toBe(0);
+
+      const aggregate = client.getAggregateUsage();
+      expect(aggregate.usage_available).toBe(false);
+      expect(aggregate.estimated_cost_usd).toBeNull();
     });
 
     it('isolates telemetry sink errors so inference never fails on sink error', async () => {
@@ -285,7 +360,7 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
         provider: 'nebius',
         model: 'test-model',
         request: { messagesCount: 1, toolsCount: 0 },
-        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, estimated_cost_usd: 0, usage_available: true },
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, estimated_cost_usd: null, usage_available: true },
         durationMs: 100,
       });
       await tracer.onToolCall({
@@ -364,7 +439,7 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
           finishReason: 'tool_calls',
           contentPreview: 'Calling tool',
         },
-        usage: { input_tokens: 50, output_tokens: 20, total_tokens: 70, estimated_cost_usd: 0, usage_available: true },
+        usage: { input_tokens: 50, output_tokens: 20, total_tokens: 70, estimated_cost_usd: null, usage_available: true },
         durationMs: 120,
       });
 
@@ -372,6 +447,17 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
       expect(calls[1].url).toBe('https://api.smith.langchain.com/runs');
       expect(calls[1].body.run_type).toBe('llm');
       expect(calls[1].body.parent_run_id).toBe(rootRunId);
+      expect(calls[1].body.extra.metadata.usage).toEqual({
+        input_tokens: 50,
+        output_tokens: 20,
+        total_tokens: 70,
+        estimated_cost_usd: null,
+        usage_available: true,
+      });
+      expect(typeof calls[1].body.extra.metadata.usage.input_tokens).toBe('number');
+      expect(typeof calls[1].body.extra.metadata.usage.output_tokens).toBe('number');
+      expect(typeof calls[1].body.extra.metadata.usage.total_tokens).toBe('number');
+      expect(calls[1].body.extra.metadata.usage.estimated_cost_usd).toBeNull();
 
       // 3. Child Tool Call
       await tracer.onToolCall({
@@ -397,7 +483,7 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
         handoffId: 'handoff-1',
         verificationRecordId: 'verif-1',
         durationMs: 250,
-        usage: { input_tokens: 50, output_tokens: 20, total_tokens: 70, estimated_cost_usd: 0, usage_available: true },
+        usage: { input_tokens: 50, output_tokens: 20, total_tokens: 70, estimated_cost_usd: null, usage_available: true },
         completedAt: new Date().toISOString(),
       });
 
@@ -406,6 +492,60 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
       expect(calls[3].method).toBe('PATCH');
       expect(calls[3].body.outputs.status).toBe('VERIFIED');
       expect(calls[3].body.outputs.handoffId).toBe('handoff-1');
+    });
+
+    it('transmits numeric token usage metrics and null estimated_cost_usd in extra.metadata.usage without redaction', async () => {
+      const calls: Array<{ url: string; method: string; body: any; headers: any }> = [];
+      const fetchFn = vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({
+          url,
+          method: init?.method ?? 'GET',
+          body: JSON.parse(init?.body as string),
+          headers: init?.headers,
+        });
+        return {
+          ok: true,
+          status: 200,
+          text: async () => '{"ok": true}',
+        } as unknown as Response;
+      });
+
+      const tracer = createLangSmithTracer({
+        apiKey: 'ls-mock-key-12345678',
+        projectName: 'orchestrate-test',
+        fetchFn,
+      });
+
+      await tracer.onModelCall({
+        sequence: 1,
+        type: 'MODEL_CALL',
+        provider: 'nebius',
+        model: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
+        request: { messagesCount: 1, toolsCount: 2 },
+        usage: {
+          input_tokens: 523,
+          output_tokens: 84,
+          total_tokens: 607,
+          estimated_cost_usd: null,
+          usage_available: true,
+        },
+        durationMs: 450,
+      });
+
+      expect(calls).toHaveLength(1);
+      const postPayload = calls[0].body;
+      expect(postPayload.run_type).toBe('llm');
+      expect(postPayload.extra.metadata.usage).toEqual({
+        input_tokens: 523,
+        output_tokens: 84,
+        total_tokens: 607,
+        estimated_cost_usd: null,
+        usage_available: true,
+      });
+      expect(typeof postPayload.extra.metadata.usage.input_tokens).toBe('number');
+      expect(typeof postPayload.extra.metadata.usage.output_tokens).toBe('number');
+      expect(typeof postPayload.extra.metadata.usage.total_tokens).toBe('number');
+      expect(postPayload.extra.metadata.usage.estimated_cost_usd).toBeNull();
     });
 
     it('isSecretKey identifies plural credential forms', () => {
@@ -549,7 +689,7 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
         provider: 'nebius',
         model: 'model-a',
         request: { messagesCount: 1, toolsCount: 1 },
-        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, estimated_cost_usd: 0, usage_available: true },
+        usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, estimated_cost_usd: null, usage_available: true },
         durationMs: 50,
       });
 
@@ -570,7 +710,7 @@ describe('packages/telemetry - Minimal Telemetry Foundation', () => {
         provider: 'nebius',
         model: 'model-b',
         request: { messagesCount: 1, toolsCount: 1 },
-        usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30, estimated_cost_usd: 0, usage_available: true },
+        usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30, estimated_cost_usd: null, usage_available: true },
         durationMs: 60,
       });
 

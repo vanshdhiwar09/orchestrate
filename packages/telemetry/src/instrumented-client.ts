@@ -79,7 +79,7 @@ export class InstrumentedModelClient implements ModelClient {
           input_tokens: inputTokens,
           output_tokens: outputTokens,
           total_tokens: totalTokens,
-          estimated_cost_usd: 0,
+          estimated_cost_usd: null,
           usage_available: true,
         };
       } else {
@@ -87,7 +87,7 @@ export class InstrumentedModelClient implements ModelClient {
           input_tokens: 0,
           output_tokens: 0,
           total_tokens: 0,
-          estimated_cost_usd: 0,
+          estimated_cost_usd: null,
           usage_available: false,
         };
       }
@@ -153,7 +153,7 @@ export class InstrumentedModelClient implements ModelClient {
           input_tokens: 0,
           output_tokens: 0,
           total_tokens: 0,
-          estimated_cost_usd: 0,
+          estimated_cost_usd: null,
           usage_available: false,
         },
         durationMs,
@@ -186,7 +186,7 @@ export class InstrumentedModelClient implements ModelClient {
       input_tokens: this.totalInputTokens,
       output_tokens: this.totalOutputTokens,
       total_tokens: this.totalTokens,
-      estimated_cost_usd: 0,
+      estimated_cost_usd: null,
       usage_available: this.hasRecordedUsage,
     };
   }

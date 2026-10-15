@@ -30,7 +30,8 @@ export class NebiusModelClient implements ModelClient {
       );
     }
     this.apiKey = apiKey;
-    const base = options.baseUrl ?? 'https://api.tokenfactory.nebius.com/v1';
+    const envBase = process.env.NEBIUS_BASE_URL?.trim();
+    const base = options.baseUrl ?? (envBase || undefined) ?? 'https://api.tokenfactory.nebius.com/v1';
     this.baseUrl = base.replace(/\/+$/, '');
     this.defaultModel = options.defaultModel;
     this.defaultInferenceConfig = options.defaultInferenceConfig;

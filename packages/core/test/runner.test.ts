@@ -646,6 +646,7 @@ describe('AgentRunner', () => {
     expect(result.usage?.input_tokens).toBe(320); // 120 + 200
     expect(result.usage?.output_tokens).toBe(75); // 30 + 45
     expect(result.usage?.total_tokens).toBe(395); // 150 + 245
+    expect(result.usage?.estimated_cost_usd).toBeNull();
   });
 
   it('preserves accumulated partial usage when an iteration fails midway', async () => {
@@ -703,6 +704,7 @@ describe('AgentRunner', () => {
       expect(execErr.usage?.input_tokens).toBe(100);
       expect(execErr.usage?.output_tokens).toBe(25);
       expect(execErr.usage?.total_tokens).toBe(125);
+      expect(execErr.usage?.estimated_cost_usd).toBeNull();
     }
   });
 });
