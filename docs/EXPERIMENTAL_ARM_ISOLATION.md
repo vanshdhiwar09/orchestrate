@@ -1,7 +1,7 @@
 # Experimental Arm Construction & Isolation Contract
 
-**Document Version:** 1.0.0
-**Status:** FROZEN (M6A) — documentation only, no implementation
+**Document Version:** 1.1.0
+**Status:** FROZEN (Clarified: Approved Single-Pass Milestone) — documentation only, no implementation
 **Supplements:** [`docs/EXPERIMENT_PROTOCOL.md`](./EXPERIMENT_PROTOCOL.md) §2, §3, §8
 **Depends on:** [`docs/TASK_A_SNAPSHOT_CONTRACT.md`](./TASK_A_SNAPSHOT_CONTRACT.md)
 
@@ -12,6 +12,12 @@
 >
 > **Arm identifiers are unchanged.** The committed identifiers remain authoritative:
 > `ARM_A_BASELINE`, `ARM_B_UNVERIFIED_HANDOFF`, `ARM_C_ORCHESTRATE`.
+
+> [!NOTE]
+> **Amendment Record (v1.1.0)**
+> - **Date:** 2026-10-15
+> - **Decision:** Approved Single-Pass Benchmark Milestone Parity (`N_repair = 0`)
+> - **Scope:** Align the initial benchmark specification with the current single-pass harness and defer bounded repair to a separately specified autonomous-recovery benchmark iteration.
 
 ---
 
@@ -96,8 +102,8 @@ inside:
 
 - The raw Agent A handoff is **NOT** separately injected. Arm C tests the compiled-verified-context
   treatment, not an additional raw-context channel.
-- Verification results MAY be exposed and MAY trigger gating/repair **only** as defined by protocol
-  §2.3 and §3.6 (max two repair attempts, then `BLOCKED_NEEDS_HUMAN`).
+- **Initial Benchmark Single-Pass Parity:** In the initial benchmark evaluation, all three arms enforce a zero-repair policy ($N_{\text{repair}} = 0$) in a single pass. Independent verification runs strictly post-execution as measurement evidence; it does not trigger automated repair or retry execution.
+- Bounded autonomous repair ($N_{\text{repair}} \le 2$ transitioning to `BLOCKED_NEEDS_HUMAN`) is deferred to a future, separately specified benchmark iteration.
 - Context compilation itself is out of scope here (`ContextCompiler`, unchanged).
 
 ---
@@ -113,15 +119,22 @@ The following MUST also be equivalent across arms:
 | Task B prompt | byte-for-byte identical |
 | Model | identical model identifier |
 | Model configuration | identical parameters (temperature, max tokens, etc.) |
-| System instructions | identical **base** instructions; the only permitted difference is the arm's treatment block (§6.1) |
+| System instructions | identical **base** instructions; the only permitted difference is the arm's treatment block (§6.2) |
 | Tool definitions | identical names, schemas, descriptions |
 | Tool permissions | identical allow/deny policy and workspace scope |
 | Execution limits | identical timeouts, step limits, output limits |
+| Repair parity | architectural single-pass pipeline execution ($N_{\text{repair}} = 0$) across all arms |
 | Dependency state | identical (e.g. same lockfile and installed dependency set) |
 | Environment state | identical sanitized environment and runtime versions |
 | Arm blinding | no arm identifier or arm-revealing metadata (protocol §3.3) |
 
-### 6.1 The Treatment Block
+### 6.1 Configured Limits vs. Observed Metrics
+
+Equal configured controls and pipeline invariants MUST NOT be conflated with observed outcome metrics:
+- **Configured Controls & Pipeline Invariants (Held Identical):** All arms are provisioned with identical configured controls in `HarnessExecutionControls` (timeouts, maximum step limits, output limits, tool definitions, tool permissions). In addition, all arms execute under an identical architectural pipeline invariant in `TrialRunner`: a strict single pass with zero automated repair attempts ($N_{\text{repair}} = 0$). Zero repair is an invariant of the benchmark execution harness pipeline, not a configurable parameter in `HarnessExecutionControls`.
+- **Observed Metrics (Dependent Variables):** Actual token consumption (input tokens, output tokens, total tokens), wall-clock execution time, tool invocations, and discovery actions are dependent variables measured downstream by the benchmark evaluators to assess the efficacy of the context treatments.
+
+### 6.2 The Treatment Block
 
 The **only** intentional difference between arms is the treatment block delivered through the
 configured context channel (protocol §3.2):
@@ -132,10 +145,9 @@ configured context channel (protocol §3.2):
 | `ARM_B_UNVERIFIED_HANDOFF` | `<orchestrate_handoff>…</orchestrate_handoff>` |
 | `ARM_C_ORCHESTRATE` | `<orchestrate_context>…</orchestrate_context>` |
 
-Arm C's verification exposure and bounded repair (§5) is part of its defined treatment, not a control
-violation.
+In the initial single-pass benchmark milestone, the treatment block (`<orchestrate_context>`) is the sole experimental variation between arms. Task B verification across all arms runs strictly post-execution as independent measurement evidence, and retry budgets are held constant at $N_{\text{repair}} = 0$.
 
-### 6.2 Provability
+### 6.3 Provability
 
 To make equality auditable, the harness records per arm a treatment fingerprint (by reference; the
 exact record shape is defined in M6B):

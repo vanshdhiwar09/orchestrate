@@ -1,7 +1,7 @@
 # Trial / Run Contract
 
-**Document Version:** 1.0.0
-**Status:** FROZEN DESIGN SPECIFICATION (M6B — Pre-Implementation)
+**Document Version:** 1.1.0
+**Status:** FROZEN DESIGN SPECIFICATION (Clarified: Approved Single-Pass Milestone)
 **System Target:** Orchestrate Benchmark Evaluation Harness (V1)
 **References:**
 - [`docs/EXPERIMENT_PROTOCOL.md`](./EXPERIMENT_PROTOCOL.md) (Protocol, Arm Definitions, Metrics, Data Schema)
@@ -11,6 +11,12 @@
 - [`docs/DISCOVERY_MEASUREMENT.md`](./DISCOVERY_MEASUREMENT.md) (Discovery Measurement Contract)
 - Rework Evaluator Contract ([`packages/benchmark/src/evaluator/types.ts`](../packages/benchmark/src/evaluator/types.ts))
 - Discovery Measurement Evaluator ([`packages/benchmark/src/discovery/types.ts`](../packages/benchmark/src/discovery/types.ts))
+
+> [!NOTE]
+> **Amendment Record (v1.1.0)**
+> - **Date:** 2026-10-15
+> - **Decision:** Approved Single-Pass Benchmark Milestone Parity (`N_repair = 0`)
+> - **Scope:** Align the initial benchmark specification with the current single-pass harness and defer bounded repair to a separately specified autonomous-recovery benchmark iteration.
 
 ---
 
@@ -143,11 +149,11 @@ Context injection must follow [`docs/EXPERIMENTAL_ARM_ISOLATION.md`](./EXPERIMEN
 | :--- | :--- | :--- | :--- |
 | `ARM_A_BASELINE` | *None* (empty) | Repository filesystem only | **NO** (Strictly withheld) |
 | `ARM_B_UNVERIFIED_HANDOFF` | `<orchestrate_handoff>` | Upstream Agent A claims (`UNVERIFIED`) | **NO** (Strictly withheld) |
-| `ARM_C_ORCHESTRATE` | `<orchestrate_context>` | ContextCompiler verified facts & decisions | **YES** (Via gated repair protocol) |
+| `ARM_C_ORCHESTRATE` | `<orchestrate_context>` | ContextCompiler verified facts & decisions | **NO** (Post-execution measurement only in initial single-pass trials; gated repair deferred) |
 
 ### 5.1 Prohibition of Extraneous Channels
 - In `ARM_C_ORCHESTRATE`, the raw Agent A handoff must **NOT** be separately injected alongside `<orchestrate_context>`. Arm C tests the compiled verified context treatment in isolation.
-- In `ARM_A_BASELINE` and `ARM_B_UNVERIFIED_HANDOFF`, no verification results may be revealed before or during execution.
+- In `ARM_A_BASELINE` and `ARM_B_UNVERIFIED_HANDOFF`, no verification results may be revealed before or during execution. Task B verification across all arms runs strictly post-execution as independent measurement evidence.
 
 ---
 
@@ -201,23 +207,27 @@ Independent verification checks configured for Task 2 are executed against the f
 
 ---
 
-## 9. Bounded Repair Evidence
+## 9. Bounded Repair Evidence & Initial Single-Pass Benchmark Policy
 
-In `ARM_C_ORCHESTRATE`, failing verification checks trigger the automated repair loop under the frozen bounds of [`EXPERIMENT_PROTOCOL.md §3.6`](./EXPERIMENT_PROTOCOL.md#L108):
+### 9.1 Initial Benchmark Milestone: Single-Pass Parity ($N_{\text{repair}} = 0$)
+For the initial benchmark evaluation, all three arms execute in a **single pass with zero automated repair attempts**:
+- `ARM_A_BASELINE`: $N_{\text{repair}} = 0$
+- `ARM_B_UNVERIFIED_HANDOFF`: $N_{\text{repair}} = 0$
+- `ARM_C_ORCHESTRATE`: $N_{\text{repair}} = 0$
+
+**Rationale & Treatment Isolation:**
+The primary research objective is to isolate the effect of verification-backed compiled project context against repository-only and unverified-handoff baselines. Enforcing symmetric single-pass execution ($N_{\text{repair}} = 0$) across all arms guarantees identical execution, step, and retry budgets. This eliminates the significant confounding variable of differential retry policies or error feedback loops in Arm C.
+
+### 9.2 Deferred Bounded Repair Protocol
+The autonomous repair loop ($N_{\text{repair}} \le 2$ transitioning to `BLOCKED_NEEDS_HUMAN` upon exhaustion) is explicitly **deferred** to a future, separately specified benchmark iteration focused on autonomous recovery. Under that future protocol:
 - Maximum of **two automated repair attempts** ($N_{\text{repair}} \le 2$).
 - If verification fails after attempt 2, execution transitions to `BLOCKED_NEEDS_HUMAN`.
 - Arms A and B execute zero repair attempts ($N_{\text{repair}} = 0$).
 
-### 9.1 Repair Evidence Tracking
-The arm record maintains an append-only array of repair attempts:
-$$\text{repairAttempts}: [\text{Attempt}_1, \text{Attempt}_2]$$
-Each attempt records:
-- Input verification failure diagnostic.
-- Tool transcript during repair.
-- Subsequent verification result.
-- Resulting status (`VERIFIED`, `FAILED`, or `BLOCKED_NEEDS_HUMAN`).
-
-Exhausting repair attempts without reaching `VERIFIED` is valid benchmark evidence and does **not** invalidate the trial.
+### 9.3 Machine-Readable Evidence Representation
+- In the initial single-pass benchmark implementation ([`packages/benchmark/src/harness/types.ts`](../packages/benchmark/src/harness/types.ts)), each arm executes strictly once. The machine-readable evidence contracts (`TrialArmRecord`, `RawExecutionEvidence`, `BenchmarkVerificationEvidence`) do **not** contain or record a `repairAttempts` field.
+- If verification checks fail in Arm C during the initial benchmark, the outcome is recorded directly as `status: 'FAILED'` on the verification evidence and arm record without retry.
+- The conceptual `repairAttempts: RepairAttemptRecord[]` array specified in design §20 is reserved for future repair-enabled benchmark iterations. Exhausting repair attempts in such future iterations remains valid benchmark evidence and does **not** invalidate the trial.
 
 ---
 
@@ -291,12 +301,12 @@ The harness deterministically classifies every error into one of five mutually e
 ### 11.3 Category C: Verification Failure
 - **Definition:** Agent B completed Task 2, but the configured `VerificationEngine` checks failed.
 - **Classification:** **`Verification Failure`** (Arm verification status = `FAILED`).
-- **Dataset Handling:** **Valid benchmark data**. Directly measures the efficacy of the arm's context treatment.
+- **Dataset Handling:** **Valid benchmark data**. Directly measures the efficacy of the arm's context treatment. In the initial single-pass benchmark ($N_{\text{repair}} = 0$), any failing check in Arm C is classified here.
 
-### 11.4 Category D: Repair Failure
-- **Definition:** In Arm C, automated repair ran the maximum allowed attempts (2) without passing verification.
-- **Classification:** **`Repair Failure`** (Arm verification status = `FAILED`, repair status = `EXHAUSTED`).
-- **Dataset Handling:** **Valid benchmark data**. Demonstrates bounded repair termination.
+### 11.4 Category D: Repair Failure (Inactive / Not Applicable in Initial Single-Pass Trials)
+- **Status:** **Inactive / Not Applicable for initial single-pass benchmark evaluation.**
+- **Clarification:** Because all three arms execute in a single pass ($N_{\text{repair}} = 0$) during the initial benchmark, Category D is not triggered. Any verification check failure in Arm C is classified under **Category C: Verification Failure**.
+- **Deferred Definition (Future Repair Iterations):** In a future repair-enabled benchmark iteration, if automated repair in Arm C runs the maximum allowed attempts (2) without passing verification, it is classified as `Repair Failure` (Arm verification status = `FAILED`, repair status = `EXHAUSTED`). Demonstrates bounded repair termination as valid benchmark data.
 
 ### 11.5 Category E: Human Block
 - **Definition:** Execution reached a state where automated progress was impossible without human direction (`BLOCKED_NEEDS_HUMAN`).
@@ -593,6 +603,8 @@ export interface TokenUsageRecord {
 
 /**
  * Discrete record of an automated repair loop attempt.
+ * Deferred: Reserved for future repair-enabled benchmark iterations.
+ * Not present in active initial single-pass types (packages/benchmark/src/harness/types.ts).
  */
 export interface RepairAttemptRecord {
   attemptNumber: number; // 1 or 2
@@ -604,6 +616,8 @@ export interface RepairAttemptRecord {
 
 /**
  * Verification record for an arm.
+ * Note: Describes the deferred conceptual target schema for future repair-enabled trials.
+ * Active M7 types in packages/benchmark/src/harness/types.ts do not contain this field.
  */
 export interface ArmVerificationRecord {
   attempts: number;
@@ -742,7 +756,7 @@ The following ten questions have been rigorously evaluated against this specific
 | 3 | **Can we prove all arms started from the same snapshot?** | **YES.** Starting commit invariant enforces `arm.workspace.initial_commit_sha == trial.snapshot_commit_sha`. | §3, §6 |
 | 4 | **Can we distinguish invalid trial from failed agent?** | **YES.** `INVALID` is container-level validity; `FAILED` is agent/task-level evidence. Explicit axiom: $\text{Invalid Trial} \neq \text{Failed Agent}$. | §11, §12, §13 |
 | 5 | **Can we distinguish verification failure from agent failure?** | **YES.** Captured in separate dimensions: `executionStatus` (`COMPLETED`/`FAILED`) vs `verification.finalStatus` (`VERIFIED`/`FAILED`). | §8, §11, §13 |
-| 6 | **Can we identify every repair attempt?** | **YES.** Recorded in append-only `repairAttempts` array with diagnostics and outcomes. | §9, §20 |
+| 6 | **Can we identify every repair attempt?** | **YES.** Single-pass execution ($N_{\text{repair}} = 0$) across all arms is enforced for the initial benchmark; detailed `repairAttempts` tracking is deferred to future repair iterations. | §9, §20 |
 | 7 | **Can we detect treatment mismatch?** | **YES.** `treatmentFingerprint` hashes all execution controls; differences outside `treatmentBlockSha256` trigger `INVALID_TRIAL`. | §6 |
 | 8 | **Can we detect information leakage?** | **YES.** Concrete leakage violations trigger immediate irreversible transition to `INVALID` with strict no-salvage rule. | §14 |
 | 9 | **Can every metric trace back to an arm and trial?** | **YES.** Hierarchical references `Trial (run_id) -> Arm (run_id, arm_id) -> Evidence` bind all metrics. | §10, §20 |

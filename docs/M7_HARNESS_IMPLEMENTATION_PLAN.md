@@ -425,12 +425,9 @@ VerificationResult { status: 'VERIFIED' | 'FAILED', evidence: VerificationEviden
    - **`ARM_C_ORCHESTRATE`:**
      - Agent executes Task B with compiled verified context.
      - Independent verification runs afterward.
-     - The verification result **MAY trigger the already-frozen Orchestrate repair/gating behavior**.
-     - Repair is bounded exactly according to the existing frozen contract (a maximum of **2 automated repair attempts**).
-     - Each repair attempt is a distinct execution and evidence record (`verificationAttempts: [result1, result2]`).
-     - If attempt 2 fails, the execution terminates with status `BLOCKED_NEEDS_HUMAN` and `repairStatus = 'EXHAUSTED'`.
-     - **No repair is triggered from agent claims alone.**
-     - **No repair occurs in Arm A or Arm B.**
+     - **Initial Single-Pass Milestone Policy:** In the initial benchmark evaluation, all arms execute with $N_{\text{repair}} = 0$ in a single pass to enforce symmetric execution budgets and cleanly isolate the context treatment.
+     - Verification results are captured as independent measurement evidence; check failures result in `status: 'FAILED'` with no automated repair attempt.
+     - Autonomous bounded repair ($N_{\text{repair}} \le 2$ transitioning to `BLOCKED_NEEDS_HUMAN`) is deferred to a future, separately specified benchmark iteration.
 5. **Ground Truth Invariant:**
    - `VERIFIED` means the verification engine ran and all checks passed.
    - An agent statement claiming "all tests pass" is an unverified claim, not verification evidence.
