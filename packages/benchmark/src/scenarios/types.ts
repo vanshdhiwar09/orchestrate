@@ -26,6 +26,7 @@ export interface ScenarioDefinition {
   armCCompiledContext: string;
   verificationChecksTaskA: VerificationCheck[];
   verificationChecksTaskB: VerificationCheck[];
+  evaluatorFilesTaskB?: ScenarioFileContent[];
 }
 
 export interface MaterializedScenario {

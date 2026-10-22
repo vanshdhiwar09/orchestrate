@@ -334,6 +334,7 @@ export interface BenchmarkVerificationInput {
   workspace: BenchmarkWorkspace;
   checks: VerificationCheck[];
   customSecrets?: string[];
+  evaluatorFiles?: readonly { path: string; content: string }[];
 }
 
 /**

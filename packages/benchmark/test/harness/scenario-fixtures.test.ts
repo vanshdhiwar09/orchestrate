@@ -40,6 +40,8 @@ describe('Scenario Fixtures & Canonical Repositories', () => {
         expect(def.taskBPrompt.length).toBeGreaterThan(10);
         expect(def.baseFiles.length).toBeGreaterThan(0);
         expect(def.verificationChecksTaskA.length).toBeGreaterThan(0);
+        expect(def.verificationChecksTaskB.length).toBeGreaterThan(0);
+        expect(def.evaluatorFilesTaskB?.length).toBeGreaterThan(0);
         expect(def.manifest.files.length).toBeGreaterThan(0);
         expect(() => validateManifest(def.manifest)).not.toThrow();
       }

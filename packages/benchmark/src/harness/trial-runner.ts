@@ -46,6 +46,7 @@ import {
 } from '../evaluator/index.js';
 import type { ArtifactManifest } from '../manifest/types.js';
 import { resolveSuppliedContextForArm } from './context-derivation.js';
+import { SCENARIO_CATALOG } from '../scenarios/catalog.js';
 
 /**
  * Maps raw tool invocation events to DiscoveryEvents according to M5/M7 discovery contract.
@@ -314,6 +315,7 @@ export interface RunTrialInput {
   manifest?: Readonly<ArtifactManifest>;
   upstreamWorkspace?: Pick<Workspace, 'readFile'>;
   suppliedContext?: Partial<Record<BenchmarkArmId, SuppliedContextReference[]>>;
+  evaluatorFiles?: readonly { path: string; content: string }[];
 }
 
 /**
@@ -483,6 +485,10 @@ export class TrialRunner {
             customSecrets: this.dependencies.customSecrets,
           });
 
+        const evaluatorFiles =
+          input.evaluatorFiles ??
+          (input.identity?.scenarioId ? SCENARIO_CATALOG[input.identity.scenarioId]?.evaluatorFilesTaskB : undefined);
+
         verificationEvidence = await verificationAdapter.verify({
           armId,
           taskId: input.identity.taskBId,
@@ -490,6 +496,7 @@ export class TrialRunner {
           workspace,
           checks: input.verificationChecks,
           customSecrets: this.dependencies.customSecrets,
+          evaluatorFiles,
         });
 
         verificationEvidenceMap[armId] = verificationEvidence;

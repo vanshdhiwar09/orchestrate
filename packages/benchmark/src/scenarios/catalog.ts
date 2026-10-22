@@ -239,7 +239,7 @@ describe('Auth Middleware (Task A)', () => {
       ],
     },
     taskBPrompt:
-      'Implement the protected profile route in src/routes/profile.ts. The handler must use the authentication middleware from src/middleware/auth.ts to verify the user and return their full profile from src/users.ts. Handle invalid/missing tokens with 401.',
+      'Implement the protected profile route in src/routes/profile.ts. The route handler must authenticate the incoming request using the existing authentication middleware and return the authenticated user full profile. Handle invalid or missing tokens with a 401 status code and JSON error response.',
     armBUnverifiedHandoff: JSON.stringify({
       summary: 'Task A completed: implemented JWT Bearer authentication middleware.',
       filesAffected: ['src/middleware/auth.ts'],
@@ -278,6 +278,175 @@ describe('Auth Middleware (Task A)', () => {
         command: 'node',
         args: ['--test', 'test/profile.test.ts'],
         timeoutMs: 30000,
+      },
+    ],
+    evaluatorFilesTaskB: [
+      {
+        path: 'test/profile.test.ts',
+        content: `import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import * as profileModule from '../src/routes/profile.ts';
+
+type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
+
+function getProfileHandler(): RequestHandler {
+  const mod = profileModule as Record<string, unknown>;
+  const candidate =
+    mod.handleProfile ??
+    mod.profileHandler ??
+    mod.handleProfileRoute ??
+    mod.default ??
+    Object.values(mod).find((val) => typeof val === 'function');
+
+  if (typeof candidate !== 'function') {
+    throw new Error('src/routes/profile.ts does not export a profile route handler function.');
+  }
+  return candidate as RequestHandler;
+}
+
+interface MockResponseResult {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: string;
+  json: () => any;
+}
+
+function createMockReqRes(options: {
+  method?: string;
+  url?: string;
+  headers?: Record<string, string>;
+}): { req: IncomingMessage; res: ServerResponse; getResult: () => MockResponseResult } {
+  let statusCode = 200;
+  const headers: Record<string, string> = {};
+  let body = '';
+
+  const req = {
+    method: options.method ?? 'GET',
+    url: options.url ?? '/api/profile',
+    headers: options.headers ?? {},
+  } as unknown as IncomingMessage;
+
+  const res = {
+    statusCode: 200,
+    setHeader: (name: string, value: string) => {
+      headers[name.toLowerCase()] = String(value);
+    },
+    getHeader: (name: string) => headers[name.toLowerCase()],
+    writeHead: (code: number, writeHeaders?: Record<string, string>) => {
+      statusCode = code;
+      res.statusCode = code;
+      if (writeHeaders) {
+        for (const [k, v] of Object.entries(writeHeaders)) {
+          headers[k.toLowerCase()] = String(v);
+        }
+      }
+    },
+    write: (chunk: unknown) => {
+      if (chunk) body += String(chunk);
+    },
+    end: (chunk?: unknown) => {
+      if (chunk) body += String(chunk);
+    },
+    get statusCode() {
+      return statusCode;
+    },
+    set statusCode(code: number) {
+      statusCode = code;
+    },
+  } as unknown as ServerResponse;
+
+  return {
+    req,
+    res,
+    getResult: () => ({
+      statusCode,
+      headers,
+      body,
+      json: () => {
+        try {
+          return JSON.parse(body);
+        } catch {
+          return null;
+        }
+      },
+    }),
+  };
+}
+
+describe('Protected Profile Route (Task B Acceptance)', () => {
+  it('returns full profile for valid Alice token', async () => {
+    const handler = getProfileHandler();
+    const { req, res, getResult } = createMockReqRes({
+      headers: { authorization: 'Bearer token-usr-alice' },
+    });
+
+    await handler(req, res);
+    const result = getResult();
+
+    assert.equal(result.statusCode, 200);
+    const data = result.json();
+    assert.ok(data, 'Response body should be valid JSON');
+    assert.equal(data.id ?? data.user?.id, 'usr-alice');
+    assert.equal(data.displayName ?? data.user?.displayName, 'Alice Admin');
+    assert.equal(data.email ?? data.user?.email, 'alice@example.com');
+    assert.equal(data.role ?? data.user?.role, 'admin');
+  });
+
+  it('returns full profile for valid Bob token', async () => {
+    const handler = getProfileHandler();
+    const { req, res, getResult } = createMockReqRes({
+      headers: { authorization: 'Bearer token-usr-bob' },
+    });
+
+    await handler(req, res);
+    const result = getResult();
+
+    assert.equal(result.statusCode, 200);
+    const data = result.json();
+    assert.ok(data, 'Response body should be valid JSON');
+    assert.equal(data.id ?? data.user?.id, 'usr-bob');
+    assert.equal(data.displayName ?? data.user?.displayName, 'Bob Member');
+    assert.equal(data.email ?? data.user?.email, 'bob@example.com');
+  });
+
+  it('rejects missing authorization header with 401', async () => {
+    const handler = getProfileHandler();
+    const { req, res, getResult } = createMockReqRes({
+      headers: {},
+    });
+
+    await handler(req, res);
+    const result = getResult();
+
+    assert.equal(result.statusCode, 401);
+  });
+
+  it('rejects non-Bearer authorization format with 401', async () => {
+    const handler = getProfileHandler();
+    const { req, res, getResult } = createMockReqRes({
+      headers: { authorization: 'Basic token-usr-alice' },
+    });
+
+    await handler(req, res);
+    const result = getResult();
+
+    assert.equal(result.statusCode, 401);
+  });
+
+  it('rejects invalid or unknown token with 401', async () => {
+    const handler = getProfileHandler();
+    const { req, res, getResult } = createMockReqRes({
+      headers: { authorization: 'Bearer invalid-token-xyz' },
+    });
+
+    await handler(req, res);
+    const result = getResult();
+
+    assert.equal(result.statusCode, 401);
+  });
+});
+`,
       },
     ],
   },
@@ -497,7 +666,7 @@ describe('Password Reset Service (Task A)', () => {
       ],
     },
     taskBPrompt:
-      'Implement the password reset confirmation endpoint POST /api/auth/reset-password in src/routes/reset.ts. It must accept token and newPassword, validate and consume the token via src/services/password-reset.ts, and update the user password in src/db.ts.',
+      'Implement the password reset confirmation endpoint POST /api/auth/reset-password in src/routes/reset.ts. The handler must accept token and newPassword, validate and consume the token using the existing password reset service, and update the user password in the database. Respond with 200 on success, and appropriate 400 status codes for invalid, expired, or already-consumed tokens or missing required fields.',
     armBUnverifiedHandoff: JSON.stringify({
       summary: 'Task A completed: implemented password reset token generation and validation service.',
       filesAffected: ['src/config/env.ts', 'src/services/password-reset.ts'],
@@ -533,6 +702,232 @@ describe('Password Reset Service (Task A)', () => {
         command: 'node',
         args: ['--test', 'test/reset.test.ts'],
         timeoutMs: 30000,
+      },
+    ],
+    evaluatorFilesTaskB: [
+      {
+        path: 'test/reset.test.ts',
+        content: `import { describe, it, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { generateResetToken, validateResetToken } from '../src/services/password-reset.ts';
+import { USERS_DB } from '../src/db.ts';
+import * as resetModule from '../src/routes/reset.ts';
+
+function getResetHandler(): Function {
+  const mod = resetModule as Record<string, unknown>;
+  const candidate =
+    mod.handleResetPassword ??
+    mod.resetPasswordHandler ??
+    mod.handleReset ??
+    mod.resetPassword ??
+    mod.default ??
+    Object.values(mod).find((val) => typeof val === 'function');
+
+  if (typeof candidate !== 'function') {
+    throw new Error('src/routes/reset.ts does not export a password reset handler function.');
+  }
+  return candidate;
+}
+
+async function invokeHandler(
+  handler: Function,
+  payload: Record<string, unknown>
+): Promise<{ statusCode: number; body: string; data: any }> {
+  let statusCode = 200;
+  const headers: Record<string, string> = {};
+  let body = '';
+
+  const jsonStr = JSON.stringify(payload);
+  const stream = Readable.from([Buffer.from(jsonStr)]);
+
+  const req = Object.assign(stream, {
+    method: 'POST',
+    url: '/api/auth/reset-password',
+    headers: {
+      'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(jsonStr)),
+    },
+    body: payload,
+  }) as unknown as IncomingMessage;
+
+  const res = {
+    statusCode: 200,
+    setHeader: (name: string, value: string) => {
+      headers[name.toLowerCase()] = String(value);
+    },
+    getHeader: (name: string) => headers[name.toLowerCase()],
+    writeHead: (code: number) => {
+      statusCode = code;
+      res.statusCode = code;
+    },
+    write: (chunk: unknown) => {
+      if (chunk) body += String(chunk);
+    },
+    end: (chunk?: unknown) => {
+      if (chunk) body += String(chunk);
+    },
+    get statusCode() {
+      return statusCode;
+    },
+    set statusCode(code: number) {
+      statusCode = code;
+    },
+  } as unknown as ServerResponse;
+
+  try {
+    const returnVal = await handler(req, res);
+    if (typeof returnVal === 'object' && returnVal !== null) {
+      if (typeof (returnVal as any).statusCode === 'number') {
+        statusCode = (returnVal as any).statusCode;
+      } else if (typeof (returnVal as any).status === 'number') {
+        statusCode = (returnVal as any).status;
+      }
+    }
+  } catch (err: any) {
+    if (err && typeof err.statusCode === 'number') {
+      statusCode = err.statusCode;
+    } else {
+      statusCode = 500;
+    }
+  }
+
+  let data = null;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    // optional body parsing
+  }
+
+  return { statusCode, body, data };
+}
+
+describe('Password Reset Confirmation Endpoint (Task B Acceptance)', () => {
+  beforeEach(() => {
+    USERS_DB.set('usr-1', { id: 'usr-1', email: 'alice@example.com', passwordHash: 'hash-old-alice' });
+    USERS_DB.set('usr-2', { id: 'usr-2', email: 'bob@example.com', passwordHash: 'hash-old-bob' });
+  });
+
+  it('successfully updates user password and consumes valid reset token', async () => {
+    const handler = getResetHandler();
+    const token = generateResetToken('usr-1');
+
+    const result = await invokeHandler(handler, {
+      token,
+      newPassword: 'brand-new-password-123',
+    });
+
+    assert.equal(result.statusCode, 200);
+
+    const user = USERS_DB.get('usr-1');
+    assert.ok(user);
+    assert.notEqual(user.passwordHash, 'hash-old-alice');
+
+    const validation = validateResetToken(token);
+    assert.equal(validation.valid, false, 'Reset token must be consumed after successful reset');
+  });
+
+  it('updates password derived from input and distinguishes distinct passwords from constant, userId, or token values', async () => {
+    const handler = getResetHandler();
+
+    // Pass 1: Reset usr-1 with first password
+    const token1 = generateResetToken('usr-1');
+    const res1 = await invokeHandler(handler, {
+      token: token1,
+      newPassword: 'alpha-secret-password-1',
+    });
+    assert.equal(res1.statusCode, 200);
+    const hash1 = USERS_DB.get('usr-1')?.passwordHash;
+
+    assert.ok(hash1, 'User 1 password hash must exist after first reset');
+    assert.notEqual(hash1, 'hash-old-alice', 'Password hash must change from baseline');
+    assert.notEqual(hash1, 'usr-1', 'Stored password must not be the user ID');
+    assert.notEqual(hash1, token1, 'Stored password must not be the reset token');
+    assert.ok(!hash1.includes('usr-1'), 'Stored password must not contain the user ID');
+    assert.ok(!hash1.includes(token1), 'Stored password must not contain the reset token');
+    assert.ok(!hash1.startsWith('rst-'), 'Stored password must not start with the reset token prefix');
+
+    // Pass 2: Reset the SAME user (usr-1) with a second, distinct password
+    const token2 = generateResetToken('usr-1');
+    const res2 = await invokeHandler(handler, {
+      token: token2,
+      newPassword: 'beta-secret-password-2',
+    });
+    assert.equal(res2.statusCode, 200);
+    const hash2 = USERS_DB.get('usr-1')?.passwordHash;
+
+    assert.ok(hash2, 'User 1 password hash must exist after second reset');
+    assert.notEqual(hash2, 'hash-old-alice', 'Password hash must change from baseline');
+    assert.notEqual(hash2, 'usr-1', 'Stored password must not be the user ID');
+    assert.notEqual(hash2, token2, 'Stored password must not be the reset token');
+    assert.ok(!hash2.includes('usr-1'), 'Stored password must not contain the user ID');
+    assert.ok(!hash2.includes(token2), 'Stored password must not contain the reset token');
+    assert.ok(!hash2.startsWith('rst-'), 'Stored password must not start with the reset token prefix');
+
+    // Critical assertion: Resetting the same user with a different password must result in a different stored password.
+    // This rejects implementations that store constants or derive the stored password from the user ID.
+    assert.notEqual(
+      hash1,
+      hash2,
+      'Stored password hashes for the same user must differ when resetting with different passwords (rejects constant and userId-derived values)'
+    );
+  });
+
+  it('rejects already-consumed token on second use with 400', async () => {
+    const handler = getResetHandler();
+    const token = generateResetToken('usr-1');
+
+    const first = await invokeHandler(handler, {
+      token,
+      newPassword: 'first-pass-update',
+    });
+    assert.equal(first.statusCode, 200);
+
+    const second = await invokeHandler(handler, {
+      token,
+      newPassword: 'second-pass-update',
+    });
+    assert.equal(second.statusCode, 400);
+  });
+
+  it('rejects invalid or non-existent token with 400', async () => {
+    const handler = getResetHandler();
+    const result = await invokeHandler(handler, {
+      token: 'totally-bogus-token',
+      newPassword: 'new-password',
+    });
+
+    assert.equal(result.statusCode, 400);
+  });
+
+  it('rejects expired token with 400', async () => {
+    const handler = getResetHandler();
+    const token = generateResetToken('usr-2', -1000);
+
+    const result = await invokeHandler(handler, {
+      token,
+      newPassword: 'new-password',
+    });
+
+    assert.equal(result.statusCode, 400);
+  });
+
+  it('rejects missing token or newPassword with 400', async () => {
+    const handler = getResetHandler();
+
+    const missingPassword = await invokeHandler(handler, {
+      token: 'some-token',
+    });
+    assert.equal(missingPassword.statusCode, 400);
+
+    const missingToken = await invokeHandler(handler, {
+      newPassword: 'some-password',
+    });
+    assert.equal(missingToken.statusCode, 400);
+  });
+});
+`,
       },
     ],
   },
@@ -748,7 +1143,7 @@ describe('ProjectRepository (Task A)', () => {
       ],
     },
     taskBPrompt:
-      'Implement ProjectSummaryService in src/services/project-summary.ts consuming ProjectRepository. Calculate completion percentages and assign status badges (PLANNED, IN_PROGRESS, COMPLETED).',
+      'Implement ProjectSummaryService in src/services/project-summary.ts consuming the project repository. Provide a summary method (such as getProjectSummary(id) or getSummary(id)) that returns the project details along with completionPercentage (number from 0 to 100 based on tasks done vs tasks total) and statusBadge (PLANNED, IN_PROGRESS, COMPLETED). Handle zero total tasks gracefully with 0% completion, and return null for unknown project IDs.',
     armBUnverifiedHandoff: JSON.stringify({
       summary: 'Task A completed: defined ProjectEntity schema and implemented ProjectRepository CRUD operations.',
       filesAffected: ['src/data/schema.ts', 'src/data/project-repository.ts'],
@@ -783,6 +1178,141 @@ describe('ProjectRepository (Task A)', () => {
         command: 'node',
         args: ['--test', 'test/project-summary.test.ts'],
         timeoutMs: 30000,
+      },
+    ],
+    evaluatorFilesTaskB: [
+      {
+        path: 'test/project-summary.test.ts',
+        content: `import { describe, it, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { ProjectRepository } from '../src/data/project-repository.ts';
+import { projectsTable } from '../src/data/schema.ts';
+import * as summaryModule from '../src/services/project-summary.ts';
+
+function createSummaryService(repo: ProjectRepository) {
+  const mod = summaryModule as Record<string, any>;
+  const ServiceClass =
+    mod.ProjectSummaryService ??
+    mod.default ??
+    Object.values(mod).find((val) => typeof val === 'function' && /class\\s/i.test(String(val)));
+
+  if (!ServiceClass) {
+    const candidate = Object.values(mod).find((val) => typeof val === 'function');
+    if (!candidate) {
+      throw new Error('src/services/project-summary.ts does not export ProjectSummaryService.');
+    }
+    return new (candidate as any)(repo);
+  }
+
+  try {
+    return new ServiceClass(repo);
+  } catch {
+    return new ServiceClass();
+  }
+}
+
+async function getSummary(service: any, projectId: string) {
+  const fn =
+    service.getProjectSummary?.bind(service) ??
+    service.getSummary?.bind(service) ??
+    service.summarize?.bind(service) ??
+    service.summarizeProject?.bind(service) ??
+    service.getProject?.bind(service);
+
+  if (typeof fn !== 'function') {
+    throw new Error('ProjectSummaryService does not have a summary method (getProjectSummary/getSummary/summarize).');
+  }
+
+  return await fn(projectId);
+}
+
+describe('ProjectSummaryService (Task B Acceptance)', () => {
+  let repo: ProjectRepository;
+  let service: any;
+
+  beforeEach(() => {
+    projectsTable.clear();
+    repo = new ProjectRepository();
+    service = createSummaryService(repo);
+  });
+
+  it('summarizes a planned project with 0% completion', async () => {
+    const project = await repo.create({
+      name: 'Planning Project',
+      status: 'PLANNED',
+      tasksTotal: 10,
+      tasksDone: 0,
+    });
+
+    const summary = await getSummary(service, project.id);
+    assert.ok(summary, 'Summary should be returned');
+    assert.equal(summary.id ?? summary.projectId ?? summary.project?.id, project.id);
+    assert.equal(summary.completionPercentage, 0);
+    assert.equal(summary.statusBadge, 'PLANNED');
+  });
+
+  it('summarizes an active in-progress project with 50% completion', async () => {
+    const project = await repo.create({
+      name: 'Active Project',
+      status: 'ACTIVE',
+      tasksTotal: 20,
+      tasksDone: 10,
+    });
+
+    const summary = await getSummary(service, project.id);
+    assert.ok(summary);
+    assert.equal(summary.completionPercentage, 50);
+    assert.equal(summary.statusBadge, 'IN_PROGRESS');
+  });
+
+  it('assigns IN_PROGRESS badge when planned project has partial task progress', async () => {
+    const project = await repo.create({
+      name: 'Partial Progress Project',
+      status: 'PLANNED',
+      tasksTotal: 10,
+      tasksDone: 5,
+    });
+
+    const summary = await getSummary(service, project.id);
+    assert.ok(summary);
+    assert.equal(summary.completionPercentage, 50);
+    assert.equal(summary.statusBadge, 'IN_PROGRESS');
+  });
+
+  it('summarizes a completed project with 100% completion', async () => {
+    const project = await repo.create({
+      name: 'Finished Project',
+      status: 'COMPLETED',
+      tasksTotal: 8,
+      tasksDone: 8,
+    });
+
+    const summary = await getSummary(service, project.id);
+    assert.ok(summary);
+    assert.equal(summary.completionPercentage, 100);
+    assert.equal(summary.statusBadge, 'COMPLETED');
+  });
+
+  it('handles zero total tasks gracefully without NaN', async () => {
+    const project = await repo.create({
+      name: 'Empty Project',
+      status: 'PLANNED',
+      tasksTotal: 0,
+      tasksDone: 0,
+    });
+
+    const summary = await getSummary(service, project.id);
+    assert.ok(summary);
+    assert.equal(summary.completionPercentage, 0);
+    assert.ok(!Number.isNaN(summary.completionPercentage));
+  });
+
+  it('returns null or undefined for unknown project ID', async () => {
+    const summary = await getSummary(service, 'prj-non-existent-id');
+    assert.ok(summary === null || summary === undefined, 'Unknown project ID should yield null/undefined');
+  });
+});
+`,
       },
     ],
   },
