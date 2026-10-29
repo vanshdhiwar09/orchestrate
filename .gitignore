@@ -5,4 +5,11 @@ dist/
 !.env.example
 .DS_Store
 *.tsbuildinfo
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 benchmarks/
+tmp/
+workspaces/
+rendered.html
+screenshot.png

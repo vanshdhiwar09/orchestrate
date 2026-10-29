@@ -81,6 +81,9 @@ export interface HarnessExecutionControls {
   commandTimeoutMs: number;
   sanitizedEnv: Readonly<Record<string, string>>;
   harnessVersion: string;
+  maxTokensPerArm?: number;
+  budgetPolicy?: BenchmarkBudgetPolicy;
+  warningThresholds?: readonly number[];
 }
 
 /**
@@ -137,6 +140,7 @@ export interface ArmExecutionInput {
     temperature?: number;
     maxTokens?: number;
   };
+  taskTimeoutMs?: number;
 }
 
 /**
@@ -182,7 +186,7 @@ export interface ExecutionUsage {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
-  estimated_cost_usd: number;
+  estimated_cost_usd: number | null;
   usage_available: boolean;
 }
 
@@ -199,6 +203,7 @@ export interface ModelCallEvent {
     toolsCount: number;
     temperature?: number;
     maxTokens?: number;
+    requestedMaxTokens?: number;
   };
   response?: {
     id: string;
@@ -236,6 +241,42 @@ export type ExecutionOutcome =
   | 'BLOCKED_NEEDS_HUMAN';
 
 /**
+ * Execution phase recorded when arm was running or interrupted.
+ */
+export type ExecutionPhase =
+  | 'INITIALIZING'
+  | 'AWAITING_MODEL'
+  | 'EXECUTING_TOOL'
+  | 'VERIFYING'
+  | 'COMPLETED';
+
+/**
+ * Supported benchmark and trial token budget policies.
+ */
+export type BenchmarkBudgetPolicy =
+  | 'ADAPTIVE_SESSION_BUDGET'
+  | 'CONTROLLED_PER_ARM_BUDGET';
+
+export const BENCHMARK_BUDGET_POLICIES: readonly BenchmarkBudgetPolicy[] = [
+  'ADAPTIVE_SESSION_BUDGET',
+  'CONTROLLED_PER_ARM_BUDGET',
+] as const;
+
+/**
+ * Explicit token budget isolation telemetry recorded per arm execution.
+ */
+export interface ArmBudgetTelemetry {
+  arm_limit: number | null;
+  arm_consumed: number;
+  aggregate_limit: number | null;
+  aggregate_consumed: number | null;
+  policy: BenchmarkBudgetPolicy;
+  warning_thresholds?: readonly number[];
+  warnings_triggered?: readonly number[];
+  budget_exhausted: boolean;
+}
+
+/**
  * Complete raw execution evidence captured for one arm execution.
  * Append-only record prior to verification and measurement.
  */
@@ -249,6 +290,8 @@ export interface RawExecutionEvidence {
   completedAt: string;
   durationMs: number;
   outcome: ExecutionOutcome;
+  phase?: ExecutionPhase;
+  budgetExhausted?: boolean;
   modelEvents: readonly ModelCallEvent[];
   toolEvents: readonly ToolCallEvent[];
   finalResponse: {
@@ -256,7 +299,9 @@ export interface RawExecutionEvidence {
     finishReason?: string;
   } | null;
   usage: ExecutionUsage;
+  budget?: ArmBudgetTelemetry;
   error?: {
+    code?: string;
     message: string;
     stack?: string;
   };

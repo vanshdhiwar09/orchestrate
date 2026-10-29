@@ -19,6 +19,7 @@ export interface CompilationRequest {
   upstreamTaskId?: string;
   tags?: string[];
   config?: Partial<CompilerConfig>;
+  workspaceRoot?: string;
 }
 
 /**
@@ -74,6 +75,29 @@ export interface GitSnapshotData {
 }
 
 /**
+ * Classification of an environment convention: explicit configuration vs. inferred pattern.
+ */
+export type ConventionNature = 'EXPLICIT_CONFIG' | 'INFERRED_CONVENTION';
+
+/**
+ * A single environment convention item with provenance.
+ */
+export interface EnvironmentConventionItem {
+  key: string;
+  value: string;
+  nature: ConventionNature;
+  provenance: string;
+  sourceLocation?: string;
+}
+
+/**
+ * Relevant repository environment conventions extracted from configuration and source evidence.
+ */
+export interface EnvironmentConventions {
+  items: EnvironmentConventionItem[];
+}
+
+/**
  * Complete, uncompiled snapshot of project state gathered by ContextLoader.
  */
 export interface CompilationSnapshot {
@@ -85,6 +109,7 @@ export interface CompilationSnapshot {
   activeDecisions: Decision[];
   projectFacts: ProjectFact[];
   git: GitSnapshotData | null;
+  environmentConventions?: EnvironmentConventions | null;
 }
 
 /**
@@ -185,4 +210,5 @@ export interface CompiledContext {
   facts: CompiledFact[];
   upstreamWork?: CompiledUpstreamWork;
   gitState?: CompiledGitState;
+  environmentConventions?: EnvironmentConventions;
 }

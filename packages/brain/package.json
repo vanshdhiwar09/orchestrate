@@ -10,5 +10,8 @@
   },
   "dependencies": {
     "@orchestrate/verification": "*"
+  },
+  "engines": {
+    "node": ">=22.8.0"
   }
 }

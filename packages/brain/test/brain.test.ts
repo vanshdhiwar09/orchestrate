@@ -78,6 +78,33 @@ describe('Project Brain (MemoryProjectBrain)', () => {
       expect(retrieved?.name).toBe('Orchestrate');
     });
 
+    it('lists projects in deterministic createdAt order with facts', async () => {
+      expect(await brain.listProjects()).toEqual([]);
+
+      await brain.createProject({
+        id: 'proj-b',
+        name: 'Project B',
+        createdAt: '2026-10-22T12:00:00.000Z',
+      });
+      await brain.createProject({
+        id: 'proj-a',
+        name: 'Project A',
+        createdAt: '2026-10-22T10:00:00.000Z',
+      });
+      await brain.addProjectFact('proj-a', {
+        key: 'lang',
+        value: 'TypeScript',
+        provenance: 'CODE',
+        status: 'VERIFIED',
+      });
+
+      const list = await brain.listProjects();
+      expect(list.map((p) => p.id)).toEqual(['proj-a', 'proj-b']);
+      expect(list[0].facts).toHaveLength(1);
+      expect(list[0].facts[0].key).toBe('lang');
+      expect(list[1].facts).toEqual([]);
+    });
+
     it('rejects duplicate or invalid project creation', async () => {
       await brain.createProject({ id: 'proj-1', name: 'Orchestrate' });
       await expect(brain.createProject({ id: 'proj-1', name: 'Duplicate' })).rejects.toThrow(
@@ -647,6 +674,10 @@ describe('Project Brain (MemoryProjectBrain)', () => {
       // Mark blocked by orchestrator repair policy
       await brain.markTaskBlocked('task-1', 'Max repair attempts exhausted');
       expect(await brain.deriveTaskTrustState('task-1')).toBe('BLOCKED_NEEDS_HUMAN');
+
+      // Unblock after human intervention
+      await brain.unblockTask('task-1');
+      expect(await brain.deriveTaskTrustState('task-1')).toBe('FAILED');
     });
   });
 
@@ -1049,6 +1080,317 @@ describe('Project Brain (MemoryProjectBrain)', () => {
           createdAt: new Date().toISOString(),
         }),
       ).rejects.toThrow(/Project "proj-non-existent" not found/);
+    });
+  });
+
+  // ==========================================================================
+  // ADVERSARIAL TRUST-STATE & EVIDENCE INTEGRITY AUDIT (STEP 10.14)
+  // ==========================================================================
+
+  describe('Adversarial Trust-State & Evidence Integrity Audit', () => {
+    beforeEach(async () => {
+      await brain.createProject({ id: 'proj-adv', name: 'Adversarial Project' });
+      await brain.createTask({
+        id: 'task-adv',
+        projectId: 'proj-adv',
+        title: 'Adversarial Task',
+        description: 'Testing verification boundaries',
+      });
+    });
+
+    it('1. rejects addVerificationRecord claiming VERIFIED when checks array is empty', async () => {
+      await expect(
+        brain.addVerificationRecord({
+          id: 'verif-empty',
+          taskId: 'task-adv',
+          attemptNumber: 1,
+          result: {
+            status: 'VERIFIED',
+            checks: [],
+            executedAt: new Date().toISOString(),
+            totalDurationMs: 0,
+          },
+          recordedAt: new Date().toISOString(),
+        })
+      ).rejects.toThrow(/Cannot record verification status "VERIFIED" without verification checks/);
+    });
+
+    it('2. rejects addVerificationRecord claiming VERIFIED when any required check failed', async () => {
+      await expect(
+        brain.addVerificationRecord({
+          id: 'verif-failing-check',
+          taskId: 'task-adv',
+          attemptNumber: 1,
+          result: {
+            status: 'VERIFIED',
+            checks: [
+              {
+                checkId: 'check-required-fail',
+                name: 'Required Check',
+                command: 'node',
+                args: ['--test'],
+                passed: false,
+                exitCode: 1,
+                signal: null,
+                stdout: '',
+                stderr: 'Test failed',
+                timedOut: false,
+                durationMs: 50,
+                verifiedAt: new Date().toISOString(),
+              },
+            ],
+            executedAt: new Date().toISOString(),
+            totalDurationMs: 50,
+          },
+          recordedAt: new Date().toISOString(),
+        })
+      ).rejects.toThrow(/Cannot record verification status "VERIFIED" when required check .* failed or is invalid/);
+    });
+
+    it('3. rejects addVerificationRecord claiming VERIFIED when a required check timed out', async () => {
+      await expect(
+        brain.addVerificationRecord({
+          id: 'verif-timeout-check',
+          taskId: 'task-adv',
+          attemptNumber: 1,
+          result: {
+            status: 'VERIFIED',
+            checks: [
+              {
+                checkId: 'check-timeout',
+                name: 'Timeout Check',
+                command: 'node',
+                args: ['--test'],
+                passed: false,
+                exitCode: 0,
+                signal: null,
+                stdout: '',
+                stderr: 'Timed out',
+                timedOut: true,
+                durationMs: 30000,
+                verifiedAt: new Date().toISOString(),
+              },
+            ],
+            executedAt: new Date().toISOString(),
+            totalDurationMs: 30000,
+          },
+          recordedAt: new Date().toISOString(),
+        })
+      ).rejects.toThrow(/Cannot record verification status "VERIFIED" when required check .* failed or is invalid/);
+    });
+
+    it('4. rejects addVerificationRecord claiming VERIFIED when only optional checks exist', async () => {
+      await expect(
+        brain.addVerificationRecord({
+          id: 'verif-only-optional',
+          taskId: 'task-adv',
+          attemptNumber: 1,
+          result: {
+            status: 'VERIFIED',
+            checks: [
+              {
+                checkId: 'check-opt',
+                name: 'Optional Check',
+                command: 'node',
+                args: ['--lint'],
+                passed: true,
+                exitCode: 0,
+                signal: null,
+                stdout: 'clean',
+                stderr: '',
+                timedOut: false,
+                durationMs: 20,
+                verifiedAt: new Date().toISOString(),
+                optional: true,
+              },
+            ],
+            executedAt: new Date().toISOString(),
+            totalDurationMs: 20,
+          },
+          recordedAt: new Date().toISOString(),
+        })
+      ).rejects.toThrow(/Cannot record verification status "VERIFIED" without at least one required check/);
+    });
+
+    it('5. allows VERIFIED when optional check fails but required check passes', async () => {
+      const record = await brain.addVerificationRecord({
+        id: 'verif-opt-fail-req-pass',
+        taskId: 'task-adv',
+        attemptNumber: 1,
+        result: {
+          status: 'VERIFIED',
+          checks: [
+            {
+              checkId: 'check-req',
+              name: 'Required Acceptance Check',
+              command: 'node',
+              args: ['--test'],
+              passed: true,
+              exitCode: 0,
+              signal: null,
+              stdout: 'Pass',
+              stderr: '',
+              timedOut: false,
+              durationMs: 50,
+              verifiedAt: new Date().toISOString(),
+              optional: false,
+            },
+            {
+              checkId: 'check-opt-warn',
+              name: 'Optional Linter',
+              command: 'eslint',
+              args: ['.'],
+              passed: false,
+              exitCode: 1,
+              signal: null,
+              stdout: '',
+              stderr: '1 warning',
+              timedOut: false,
+              durationMs: 20,
+              verifiedAt: new Date().toISOString(),
+              optional: true,
+            },
+          ],
+          executedAt: new Date().toISOString(),
+          totalDurationMs: 70,
+        },
+        recordedAt: new Date().toISOString(),
+      });
+
+      expect(record.result.status).toBe('VERIFIED');
+      const trustState = await brain.deriveTaskTrustState('task-adv');
+      expect(trustState).toBe('VERIFIED');
+    });
+
+    it('6. deriveTaskTrustState fails closed if database contains corrupted record claiming VERIFIED with empty checks', async () => {
+      // Simulate raw corrupted record inserted into storage
+      (brain as any).verificationRecords.set('task-adv:1', {
+        id: 'corrupt-1',
+        taskId: 'task-adv',
+        attemptNumber: 1,
+        result: { status: 'VERIFIED', checks: [] },
+        recordedAt: new Date().toISOString(),
+      });
+
+      const trustState = await brain.deriveTaskTrustState('task-adv');
+      expect(trustState).toBe('FAILED');
+    });
+
+    it('7. deriveTaskTrustState fails closed if database contains corrupted record with failing check marked VERIFIED', async () => {
+      (brain as any).verificationRecords.set('task-adv:1', {
+        id: 'corrupt-2',
+        taskId: 'task-adv',
+        attemptNumber: 1,
+        result: {
+          status: 'VERIFIED',
+          checks: [
+            { checkId: 'c1', passed: false, exitCode: 1, timedOut: false, signal: null },
+          ],
+        },
+        recordedAt: new Date().toISOString(),
+      });
+
+      const trustState = await brain.deriveTaskTrustState('task-adv');
+      expect(trustState).toBe('FAILED');
+    });
+
+    it('8. freshness: Attempt 1 passes; Attempt 2 creates handoff -> trust state transitions to CLAIMED (not VERIFIED)', async () => {
+      // Attempt 1: Handoff and Verification pass
+      await brain.addHandoff({
+        id: 'h-a1',
+        taskId: 'task-adv',
+        attemptNumber: 1,
+        status: 'CLAIMED',
+        summary: 'Attempt 1 completed',
+        changes: 'impl',
+        filesAffected: ['src/app.ts'],
+        decisionsCreated: [],
+        assumptions: [],
+        limitations: [],
+        recommendedFollowUp: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      await brain.addVerificationRecord({
+        id: 'v-a1',
+        taskId: 'task-adv',
+        attemptNumber: 1,
+        handoffId: 'h-a1',
+        result: createPassingResult(),
+        recordedAt: new Date().toISOString(),
+      });
+
+      expect(await brain.deriveTaskTrustState('task-adv')).toBe('VERIFIED');
+
+      // Attempt 2: Modifies source code, creating a new handoff
+      await brain.addHandoff({
+        id: 'h-a2',
+        taskId: 'task-adv',
+        attemptNumber: 2,
+        status: 'CLAIMED',
+        summary: 'Attempt 2 started changes',
+        changes: 'more code',
+        filesAffected: ['src/app.ts'],
+        decisionsCreated: [],
+        assumptions: [],
+        limitations: [],
+        recommendedFollowUp: [],
+        createdAt: new Date().toISOString(),
+      });
+
+      // Trust state must immediately revert to CLAIMED because Attempt 2 has not been verified!
+      expect(await brain.deriveTaskTrustState('task-adv')).toBe('CLAIMED');
+    });
+
+    it('9. freshness: Attempt 1 passes; Attempt 2 fails verification -> trust state is FAILED (not VERIFIED)', async () => {
+      await brain.addHandoff({
+        id: 'h-a1',
+        taskId: 'task-adv',
+        attemptNumber: 1,
+        status: 'CLAIMED',
+        summary: 'Attempt 1',
+        changes: '',
+        filesAffected: [],
+        decisionsCreated: [],
+        assumptions: [],
+        limitations: [],
+        recommendedFollowUp: [],
+        createdAt: new Date().toISOString(),
+      });
+      await brain.addVerificationRecord({
+        id: 'v-a1',
+        taskId: 'task-adv',
+        attemptNumber: 1,
+        handoffId: 'h-a1',
+        result: createPassingResult(),
+        recordedAt: new Date().toISOString(),
+      });
+
+      await brain.addHandoff({
+        id: 'h-a2',
+        taskId: 'task-adv',
+        attemptNumber: 2,
+        status: 'CLAIMED',
+        summary: 'Attempt 2',
+        changes: '',
+        filesAffected: [],
+        decisionsCreated: [],
+        assumptions: [],
+        limitations: [],
+        recommendedFollowUp: [],
+        createdAt: new Date().toISOString(),
+      });
+      await brain.addVerificationRecord({
+        id: 'v-a2',
+        taskId: 'task-adv',
+        attemptNumber: 2,
+        handoffId: 'h-a2',
+        result: createFailingResult(),
+        recordedAt: new Date().toISOString(),
+      });
+
+      // Trust state must be FAILED, cannot promote using attempt 1
+      expect(await brain.deriveTaskTrustState('task-adv')).toBe('FAILED');
     });
   });
 });

@@ -63,16 +63,26 @@ export function assertAgentBlinded(text: string, trial: TrialRecord, contextName
 
 /**
  * Formats the structured unverified handoff block for ARM_B (M6C §5.2).
+ * Idempotently wraps payload in <orchestrate_handoff> if not already wrapped.
  */
 export function formatArmBTreatmentBlock(payload: string): string {
-  return `<orchestrate_handoff>\n${payload.trim()}\n</orchestrate_handoff>`;
+  const trimmed = payload.trim();
+  if (trimmed.startsWith('<orchestrate_handoff>') && trimmed.endsWith('</orchestrate_handoff>')) {
+    return trimmed;
+  }
+  return `<orchestrate_handoff>\n${trimmed}\n</orchestrate_handoff>`;
 }
 
 /**
  * Formats the compiled verified context block for ARM_C (M6C §5.3).
+ * Idempotently wraps payload in <orchestrate_context> if not already wrapped.
  */
 export function formatArmCTreatmentBlock(payload: string): string {
-  return `<orchestrate_context>\n${payload.trim()}\n</orchestrate_context>`;
+  const trimmed = payload.trim();
+  if (trimmed.startsWith('<orchestrate_context>') && trimmed.endsWith('</orchestrate_context>')) {
+    return trimmed;
+  }
+  return `<orchestrate_context>\n${trimmed}\n</orchestrate_context>`;
 }
 
 /**
@@ -146,6 +156,7 @@ export function buildArmTriad(
     controlFingerprint: trial.controlFingerprint,
     treatmentFingerprint: armATreatmentFingerprint,
     samplingConfig,
+    taskTimeoutMs: trial.controls.taskTimeoutMs,
   });
 
   const armARecord: TrialArmRecord = Object.freeze({
@@ -177,6 +188,7 @@ export function buildArmTriad(
     controlFingerprint: trial.controlFingerprint,
     treatmentFingerprint: armBTreatmentFingerprint,
     samplingConfig,
+    taskTimeoutMs: trial.controls.taskTimeoutMs,
   });
 
   const armBRecord: TrialArmRecord = Object.freeze({
@@ -208,6 +220,7 @@ export function buildArmTriad(
     controlFingerprint: trial.controlFingerprint,
     treatmentFingerprint: armCTreatmentFingerprint,
     samplingConfig,
+    taskTimeoutMs: trial.controls.taskTimeoutMs,
   });
 
   const armCRecord: TrialArmRecord = Object.freeze({

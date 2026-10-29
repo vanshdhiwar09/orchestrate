@@ -1316,4 +1316,302 @@ describe('ProjectSummaryService (Task B Acceptance)', () => {
       },
     ],
   },
+
+  'profile-validation': {
+    scenarioId: 'profile-validation',
+    alias: 'sc-profile-val',
+    title: 'Profile Object Validation Helper',
+    description:
+      'Task A implements a reusable email validator helper. Task B implements a profile object validator enforcing name, email, input type, and error collection contracts.',
+    taskAId: 'task-email-validator',
+    taskBId: 'task-profile-validator',
+    baseCommitMessage: 'feat(sc-profile-val): initial repository setup with profile types',
+    taskACommitMessage: 'feat(sc-profile-val): implement email validator helper (Task A)',
+    baseCommitSha: '63f894c4c1fb3f1ae2da7fc9d9fb9ffe113f49c7',
+    canonicalSnapshotCommitSha: '3ffc98a6c81c3452925b26021032714c6ebf233d',
+    baseFiles: [
+      {
+        path: 'package.json',
+        content: JSON.stringify(
+          {
+            name: 'profile-validation',
+            version: '1.0.0',
+            type: 'module',
+            scripts: {
+              test: 'node --test',
+            },
+          },
+          null,
+          2
+        ) + '\n',
+      },
+      {
+        path: 'tsconfig.json',
+        content: JSON.stringify(
+          {
+            compilerOptions: {
+              target: 'ES2022',
+              module: 'NodeNext',
+              moduleResolution: 'NodeNext',
+              allowImportingTsExtensions: true,
+              noEmit: true,
+              strict: true,
+              esModuleInterop: true,
+              skipLibCheck: true,
+            },
+            include: ['src/**/*', 'test/**/*'],
+          },
+          null,
+          2
+        ) + '\n',
+      },
+      {
+        path: 'src/types.ts',
+        content: `export interface ValidationResult {
+  valid: boolean;
+  errors: string[];
+}
+
+export interface UserProfile {
+  name: string;
+  email: string;
+  [key: string]: unknown;
+}
+`,
+      },
+    ],
+    taskAFiles: [
+      {
+        path: 'src/email-validator.ts',
+        content: `/**
+ * Validates whether an email string matches the standard email format.
+ * Format: non-whitespace/non-@ chars, followed by @, followed by domain and dot extension.
+ */
+export function isValidEmail(email: string): boolean {
+  if (typeof email !== 'string') return false;
+  const trimmed = email.trim();
+  if (!trimmed) return false;
+  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
+  return emailRegex.test(trimmed);
+}
+`,
+      },
+      {
+        path: 'test/email.test.ts',
+        content: `import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { isValidEmail } from '../src/email-validator.ts';
+
+describe('Email Validator Helper', () => {
+  it('accepts standard valid email addresses', () => {
+    assert.equal(isValidEmail('user@example.com'), true);
+    assert.equal(isValidEmail('alice.smith@domain.org'), true);
+    assert.equal(isValidEmail('test+tag@sub.example.co'), true);
+  });
+
+  it('rejects invalid email formats', () => {
+    assert.equal(isValidEmail('not-an-email'), false);
+    assert.equal(isValidEmail('@missinguser.com'), false);
+    assert.equal(isValidEmail('missingdomain@'), false);
+    assert.equal(isValidEmail('spaces in@domain.com'), false);
+    assert.equal(isValidEmail('user@nodot'), false);
+    assert.equal(isValidEmail(''), false);
+  });
+});
+`,
+      },
+    ],
+    manifest: {
+      taskId: 'task-email-validator',
+      attemptNumber: 1,
+      createdAt: '2026-10-01T14:00:00.000Z',
+      files: [
+        {
+          path: 'src/email-validator.ts',
+          status: 'ADDED',
+          symbols: [
+            {
+              name: 'isValidEmail',
+              kind: 'function',
+              signature: 'export function isValidEmail(email: string): boolean',
+            },
+          ],
+        },
+      ],
+    },
+    taskBPrompt:
+      'Implement the profile validator helper function in src/validate-profile.ts according to the following contract:\n\n1. Function signature: export a function validateProfile(input: unknown): ValidationResult (named or default export). ValidationResult shape: { valid: boolean; errors: string[] }. Import types from ./types.ts.\n2. Input validation:\n   - If input is null, undefined, primitive, or an array, return { valid: false, errors: [\'Input must be a non-null object\'] }.\n3. Name field:\n   - The name field is required and must be a string.\n   - If name is missing, not a string, or contains only whitespace (after trimming), add error: \'Name is required and cannot be empty\'.\n4. Email field:\n   - The email field is required and must be a string.\n   - If email is missing or not a string, add error: \'Email is required\'.\n   - If email is present, validate its format. You may reuse the existing helper in src/email-validator.ts.\n   - If format is invalid, add error: \'Invalid email format\'.\n5. Extra fields:\n   - Extra fields (e.g. age, bio, role) are permitted and do not cause validation failure.\n6. Return value:\n   - If all validations pass, return { valid: true, errors: [] }.\n   - If validations fail, return { valid: false, errors: [...] } containing all applicable error messages.\n7. Module conventions:\n   - In this repository (NodeNext ESM), all relative imports in TypeScript files must include an explicit .ts extension (e.g. from \'./types.ts\' or from \'./email-validator.ts\').',
+    armBUnverifiedHandoff: JSON.stringify({
+      summary: 'Task A completed: implemented email validator helper in src/email-validator.ts with isValidEmail function.',
+      filesAffected: ['src/email-validator.ts'],
+      symbols: ['isValidEmail'],
+      decisionsCreated: ['Use regex /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/ for email validation'],
+    }),
+    armCCompiledContext: `<orchestrate_context>
+  <repository_conventions>
+    <module_resolution>NodeNext</module_resolution>
+    <import_style>Explicit relative import extensions required (e.g. from './types.ts' or from './email-validator.ts').</import_style>
+    <convention key="type_import_convention" nature="EXPLICIT_CONFIG" provenance="tsconfig.json#compilerOptions.allowImportingTsExtensions">Use "import type" for TypeScript interfaces and type aliases; use standard "import" only for runtime values (functions, classes, constants). Node.js type-stripping removes type declarations at runtime.</convention>
+    <type_import_convention>Use "import type" for TypeScript interfaces and type aliases; use standard "import" only for runtime values (functions, classes, constants). Node.js type-stripping removes type declarations at runtime.</type_import_convention>
+  </repository_conventions>
+  <upstream_work task_id="task-email-validator" trust_state="VERIFIED" attempt="1">
+    <files_affected>
+      <file>src/email-validator.ts</file>
+    </files_affected>
+    <symbols>
+      <symbol>isValidEmail</symbol>
+    </symbols>
+  </upstream_work>
+  <architectural_decisions>
+    <decision id="dec-email-regex">
+      <statement>Validate email via isValidEmail in src/email-validator.ts; collect errors into ValidationResult.</statement>
+    </decision>
+  </architectural_decisions>
+</orchestrate_context>`,
+    verificationChecksTaskA: [
+      {
+        id: 'check-email-validator-unit',
+        name: 'unit_tests_email_validator',
+        command: 'node',
+        args: ['--test', 'test/email.test.ts'],
+        timeoutMs: 30000,
+      },
+    ],
+    verificationChecksTaskB: [
+      {
+        id: 'check-existing-unit-tests',
+        name: 'unit_tests_email_validator',
+        command: 'node',
+        args: ['--test', 'test/email.test.ts'],
+        timeoutMs: 30000,
+      },
+      {
+        id: 'check-profile-validation-acceptance',
+        name: 'acceptance_tests_profile_validation',
+        command: 'node',
+        args: ['--test', 'test/profile-validation.test.ts'],
+        timeoutMs: 30000,
+      },
+    ],
+    evaluatorFilesTaskB: [
+      {
+        path: 'test/profile-validation.test.ts',
+        content: `import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import * as profileModule from '../src/validate-profile.ts';
+import { isValidEmail } from '../src/email-validator.ts';
+import type { ValidationResult } from '../src/types.ts';
+
+type ValidateFn = (input: unknown) => ValidationResult;
+
+function getValidateProfile(): ValidateFn {
+  const mod = profileModule as Record<string, unknown>;
+  const candidate =
+    mod.validateProfile ??
+    mod.validate ??
+    mod.default ??
+    Object.values(mod).find((val) => typeof val === 'function');
+
+  if (typeof candidate !== 'function') {
+    throw new Error('src/validate-profile.ts does not export a validateProfile function.');
+  }
+  return candidate as ValidateFn;
+}
+
+describe('Profile Validation Acceptance Tests (Task B)', () => {
+  it('1. accepts a valid profile', () => {
+    const validate = getValidateProfile();
+    const result = validate({ name: 'Alice Smith', email: 'alice@example.com' });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it('2. rejects missing name', () => {
+    const validate = getValidateProfile();
+    const result = validate({ email: 'alice@example.com' });
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e: string) => /name.*required/i.test(e)));
+  });
+
+  it('3. rejects missing email', () => {
+    const validate = getValidateProfile();
+    const result = validate({ name: 'Alice Smith' });
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e: string) => /email.*required/i.test(e)));
+  });
+
+  it('4. rejects empty or whitespace-only name', () => {
+    const validate = getValidateProfile();
+    const r1 = validate({ name: '', email: 'alice@example.com' });
+    assert.equal(r1.valid, false);
+    assert.ok(r1.errors.some((e: string) => /name.*required/i.test(e)));
+
+    const r2 = validate({ name: '   \\t \\n  ', email: 'alice@example.com' });
+    assert.equal(r2.valid, false);
+    assert.ok(r2.errors.some((e: string) => /name.*required/i.test(e)));
+  });
+
+  it('5. rejects invalid email examples according to explicit contract', () => {
+    const validate = getValidateProfile();
+    const invalidEmails = [
+      'not-an-email',
+      '@missinguser.com',
+      'missingdomain@',
+      'spaces in@domain.com',
+      'user@nodot',
+    ];
+    for (const email of invalidEmails) {
+      const result = validate({ name: 'Alice', email });
+      assert.equal(result.valid, false, \`Expected \${email} to be rejected\`);
+      assert.ok(result.errors.some((e: string) => /invalid email/i.test(e)));
+    }
+  });
+
+  it('6. accepts valid email examples according to explicit contract', () => {
+    const validate = getValidateProfile();
+    const validEmails = [
+      'user@example.com',
+      'alice.smith@domain.org',
+      'test+tag@sub.example.co',
+    ];
+    for (const email of validEmails) {
+      const result = validate({ name: 'Alice', email });
+      assert.equal(result.valid, true, \`Expected \${email} to be accepted\`);
+      assert.deepEqual(result.errors, []);
+    }
+  });
+
+  it('7. rejects null, undefined, primitive, and non-object inputs', () => {
+    const validate = getValidateProfile();
+    const nonObjects: unknown[] = [null, undefined, 'string', 123, true, [1, 2, 3]];
+    for (const input of nonObjects) {
+      const result = validate(input);
+      assert.equal(result.valid, false);
+      assert.ok(result.errors.some((e: string) => /non-null object/i.test(e)));
+    }
+  });
+
+  it('8. permits extra fields following open schema policy', () => {
+    const validate = getValidateProfile();
+    const result = validate({
+      name: 'Bob Member',
+      email: 'bob@example.com',
+      age: 32,
+      role: 'admin',
+      bio: 'Software engineer',
+      metadata: { department: 'Engineering' },
+    });
+    assert.equal(result.valid, true);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it('9. existing fixture tests remain passing (email validator)', () => {
+    assert.equal(isValidEmail('test@example.com'), true);
+    assert.equal(isValidEmail('bad-email'), false);
+  });
+});
+`,
+      },
+    ],
+  },
 };

@@ -212,7 +212,9 @@ export class VerificationAdapter {
       checks: input.checks,
     });
 
-    const engine = this.verificationEngine ?? new VerificationEngine({ executor });
+    const engine =
+      this.verificationEngine ??
+      new VerificationEngine({ executor, workspaceRoot: input.workspace.path });
 
     // 5. Independently execute checks with evaluator-owned file injection and cleanup
     const startedAt = new Date().toISOString();

@@ -1,4 +1,12 @@
+import { readFile as fsReadFile } from 'node:fs/promises';
+import { resolve as pathResolve } from 'node:path';
 import type { CommandExecutor } from '@orchestrate/workspace';
+import {
+  detectRepositoryModuleResolutionRule,
+  validateRelativeImportsInContent,
+  type ModuleResolutionCheckOptions,
+  type ModuleResolutionIssue,
+} from './esm-verifier.js';
 import type {
   VerificationCheck,
   VerificationEngineOptions,
@@ -24,6 +32,9 @@ export const ALLOWED_VERIFICATION_COMMANDS = new Set([
 
 export class VerificationEngine {
   private readonly executor: CommandExecutor;
+  private readonly workspaceRoot?: string;
+  private readonly readFileFn?: (path: string) => Promise<string | null>;
+  private readonly checkModuleResolution: boolean;
 
   constructor(options: VerificationEngineOptions) {
     if (!options?.executor || typeof options.executor.execute !== 'function') {
@@ -32,6 +43,28 @@ export class VerificationEngine {
       );
     }
     this.executor = options.executor;
+    this.workspaceRoot =
+      options.workspaceRoot ?? (options.executor as any).workspaceRoot;
+    this.readFileFn = options.readFile;
+    this.checkModuleResolution = options.checkModuleResolution ?? true;
+  }
+
+  private async getFileReader(): Promise<((path: string) => Promise<string | null>) | null> {
+    if (this.readFileFn) {
+      return this.readFileFn;
+    }
+    const root = this.workspaceRoot;
+    if (root) {
+      return async (relPath: string) => {
+        try {
+          const full = pathResolve(root, relPath);
+          return await fsReadFile(full, 'utf8');
+        } catch {
+          return null;
+        }
+      };
+    }
+    return null;
   }
 
   /**
@@ -185,14 +218,113 @@ export class VerificationEngine {
         durationMs,
         verifiedAt: new Date().toISOString(),
         passed,
+        optional: check.optional === true,
       });
     }
 
+    // Repository module-resolution verification: operates only when repository config requires NodeNext ESM
+    if (
+      this.checkModuleResolution &&
+      !plan.checks.some((c) => c.id === 'check-node-next-module-resolution')
+    ) {
+      const reader = await this.getFileReader();
+      if (reader) {
+        let rule: ModuleResolutionCheckOptions | null = null;
+        let configError: string | null = null;
+        try {
+          rule = await detectRepositoryModuleResolutionRule(reader);
+        } catch (err: unknown) {
+          configError = err instanceof Error ? err.message : String(err);
+        }
+
+        if (configError) {
+          evidenceList.push({
+            checkId: 'check-node-next-module-resolution',
+            name: 'node_next_module_resolution_gate',
+            command: 'node',
+            args: ['--check-module-resolution'],
+            cwd: undefined,
+            exitCode: 1,
+            signal: null,
+            stdout: '',
+            stderr: `Module-resolution check failed: repository configuration could not be read: ${configError}`,
+            timedOut: false,
+            durationMs: 0,
+            verifiedAt: new Date().toISOString(),
+            passed: false,
+            optional: false,
+          });
+        } else if (rule) {
+          const staticStart = performance.now();
+          let candidateFiles: string[] = [];
+          try {
+            const lsTracked = await this.executor.execute('git', ['ls-files']);
+            const lsUntracked = await this.executor.execute('git', [
+              'ls-files',
+              '-o',
+              '--exclude-standard',
+            ]);
+            const allFiles = (lsTracked.stdout + '\n' + lsUntracked.stdout)
+              .split(/\r?\n/)
+              .map((s) => s.trim())
+              .filter(Boolean);
+            candidateFiles = [...new Set(allFiles)].filter(
+              (f) => f.endsWith('.ts') || f.endsWith('.tsx') || f.endsWith('.js')
+            );
+          } catch {
+            candidateFiles = [];
+          }
+
+          const issues: ModuleResolutionIssue[] = [];
+          for (const f of candidateFiles) {
+            const content = await reader(f);
+            if (content !== null) {
+              issues.push(...validateRelativeImportsInContent(f, content, rule));
+            }
+          }
+
+          const staticDurationMs = Math.round(performance.now() - staticStart);
+          const staticPassed = issues.length === 0;
+
+          evidenceList.push({
+            checkId: 'check-node-next-module-resolution',
+            name: 'node_next_module_resolution_gate',
+            command: 'node',
+            args: ['--check-module-resolution'],
+            cwd: undefined,
+            exitCode: staticPassed ? 0 : 1,
+            signal: null,
+            stdout: staticPassed
+              ? `Module-resolution check passed across ${candidateFiles.length} file(s).`
+              : '',
+            stderr: staticPassed
+              ? ''
+              : `Module-resolution check failed with ${issues.length} issue(s):\n` +
+                issues.map((i) => `  - ${i.file}:${i.line}: ${i.reason}`).join('\n'),
+            timedOut: false,
+            durationMs: staticDurationMs,
+            verifiedAt: new Date().toISOString(),
+            passed: staticPassed,
+            optional: false,
+          });
+        }
+      }
+    }
+
     const totalDurationMs = Math.round(performance.now() - planStart);
-    const allPassed = evidenceList.every((e) => e.passed);
+    const requiredEvidence = evidenceList.filter((e) => e.optional !== true);
+    const allRequiredPassed =
+      requiredEvidence.length > 0 &&
+      requiredEvidence.every(
+        (e) =>
+          e.passed === true &&
+          e.exitCode === 0 &&
+          !e.timedOut &&
+          e.signal === null
+      );
 
     return {
-      status: allPassed ? 'VERIFIED' : 'FAILED',
+      status: allRequiredPassed ? 'VERIFIED' : 'FAILED',
       checks: evidenceList,
       executedAt,
       totalDurationMs,

@@ -525,6 +525,41 @@ export function handleProfile(req: IncomingMessage, res: ServerResponse): void {
       expect(existsSync(join(armWorkspace.path, 'test/profile.test.ts'))).toBe(false);
     });
 
+    it('Scenario 1 (auth-protected-api): fails verification cleanly when Task B deliverable is missing (reproducing smoke test condition)', async () => {
+      const scenario = getScenarioDefinition('auth-protected-api');
+      const materialized = await ensureCanonicalScenarioRepo('auth-protected-api');
+
+      const factory = new LocalWorkspaceFactory({
+        sourceRepoPath: materialized.repoPath,
+      });
+
+      const armWorkspace = await factory.create(materialized.snapshotCommitSha);
+      workspacesToClean.push(armWorkspace);
+
+      // In the smoke test condition, the agent failed before creating src/routes/profile.ts
+      expect(existsSync(join(armWorkspace.path, 'src/routes/profile.ts'))).toBe(false);
+
+      const adapter = new VerificationAdapter();
+      const evidence = await adapter.verify({
+        armId: 'ARM_A_BASELINE',
+        taskId: scenario.taskBId,
+        snapshotCommitSha: materialized.snapshotCommitSha,
+        workspace: armWorkspace,
+        checks: scenario.verificationChecksTaskB,
+        evaluatorFiles: scenario.evaluatorFilesTaskB,
+      });
+
+      // Verification must fail honestly with exit code 1 due to missing deliverable
+      expect(evidence.status).toBe('FAILED');
+      expect(evidence.checks[0].passed).toBe(false);
+      expect(evidence.checks[0].exitCode).toBe(1);
+      expect(evidence.checks[0].stdout).toContain('ERR_MODULE_NOT_FOUND');
+      expect(evidence.checks[0].stdout).toMatch(/src[\\/]routes[\\/]profile\.ts/);
+
+      // Evaluator file cleaned up
+      expect(existsSync(join(armWorkspace.path, 'test/profile.test.ts'))).toBe(false);
+    });
+
     it('Scenario 2 (auth-password-reset): passes verification with reference reset implementation', async () => {
       const scenario = getScenarioDefinition('auth-password-reset');
       const materialized = await ensureCanonicalScenarioRepo('auth-password-reset');

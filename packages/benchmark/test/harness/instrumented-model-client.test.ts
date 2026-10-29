@@ -60,7 +60,7 @@ describe('InstrumentedModelClient', () => {
     expect(aggregateUsage.output_tokens).toBe(40);
     expect(aggregateUsage.total_tokens).toBe(60);
     expect(aggregateUsage.usage_available).toBe(true);
-    expect(aggregateUsage.estimated_cost_usd).toBe(0);
+    expect(aggregateUsage.estimated_cost_usd).toBeNull();
   });
 
   it('handles unavailable usage cleanly without fabricating tokens', async () => {

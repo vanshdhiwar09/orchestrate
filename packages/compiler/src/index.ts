@@ -4,3 +4,7 @@ export { ContextCompilerCore } from './core.js';
 export { ContextLoader, type ContextLoaderOptions } from './loader.js';
 export { ContextSerializer } from './serializer.js';
 export { ContextCompiler } from './compiler.js';
+export {
+  RepositoryConventionExtractor,
+  type RepositoryConventionExtractorOptions,
+} from './conventions.js';

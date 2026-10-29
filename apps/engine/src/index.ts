@@ -1,5 +1,7 @@
 import {
   MemoryProjectBrain,
+  SqliteProjectBrain,
+  type SqliteProjectBrainOptions,
   type BrainStore,
   type CreateProjectInput,
   type CreateTaskInput,
@@ -54,15 +56,42 @@ import {
 } from '@orchestrate/verification';
 import {
   LocalCommandExecutor,
+  DockerSandboxCommandExecutor,
+  createCommandExecutor,
+  SandboxUnavailableError,
   LocalGitRepository,
   LocalWorkspace,
   type ExecuteCommandResult,
   type CommandExecutor,
+  type CommandExecutorMode,
   type Workspace,
 } from '@orchestrate/workspace';
 
+import {
+  createEngineServer,
+  type EngineServerOptions,
+  type EngineServerInstance,
+} from './server.js';
+import {
+  AuthError,
+  createAuthToken,
+  verifyAuthToken,
+  extractBearerToken,
+  resolveJwtSecret,
+  INSECURE_DEV_JWT_SECRET,
+  DEFAULT_JWT_ISSUER,
+  DEFAULT_JWT_AUDIENCE,
+  type AuthUser,
+  type JwtHeader,
+  type JwtPayload,
+  type CreateTokenOptions,
+  type VerifyTokenOptions,
+} from './auth.js';
+
 // Re-export all core components
 export {
+  // Server
+  createEngineServer,
   // Core
   Orchestrator,
   AgentRunner,
@@ -74,6 +103,7 @@ export {
   getProjectInfoTool,
   // Brain
   MemoryProjectBrain,
+  SqliteProjectBrain,
   // Compiler
   ContextCompiler,
   ContextCompilerCore,
@@ -84,10 +114,32 @@ export {
   // Workspace
   LocalWorkspace,
   LocalCommandExecutor,
+  DockerSandboxCommandExecutor,
+  createCommandExecutor,
+  SandboxUnavailableError,
   LocalGitRepository,
+  // Auth
+  AuthError,
+  createAuthToken,
+  verifyAuthToken,
+  extractBearerToken,
+  resolveJwtSecret,
+  INSECURE_DEV_JWT_SECRET,
+  DEFAULT_JWT_ISSUER,
+  DEFAULT_JWT_AUDIENCE,
 };
 
 export type {
+  // Auth types
+  AuthUser,
+  JwtHeader,
+  JwtPayload,
+  CreateTokenOptions,
+  VerifyTokenOptions,
+  CommandExecutorMode,
+  // Server types
+  EngineServerOptions,
+  EngineServerInstance,
   // Core types
   OrchestrateTaskInput,
   OrchestrationResult,
@@ -98,6 +150,7 @@ export type {
   Tool,
   // Brain types
   BrainStore,
+  SqliteProjectBrainOptions,
   CreateProjectInput,
   CreateTaskInput,
   Project,

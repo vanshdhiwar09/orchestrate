@@ -14,7 +14,12 @@ import {
 import { LocalCommandExecutor, LocalGitRepository } from '@orchestrate/workspace';
 
 describe('Scenario Fixtures & Canonical Repositories', () => {
-  const scenarioIds = ['auth-protected-api', 'auth-password-reset', 'data-model-feature'] as const;
+  const scenarioIds = [
+    'auth-protected-api',
+    'auth-password-reset',
+    'data-model-feature',
+    'profile-validation',
+  ] as const;
   const workspacesToClean: BenchmarkWorkspace[] = [];
 
   afterEach(async () => {

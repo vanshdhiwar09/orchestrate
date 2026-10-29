@@ -43,7 +43,7 @@ export interface PreflightSummary {
 }
 
 export const DEFAULT_PREFLIGHT_CONTROLS: HarnessExecutionControls = {
-  modelId: 'nebius/meta-llama/Llama-3.3-70B-Instruct',
+  modelId: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
   temperature: 0.2,
   topP: 0.95,
   maxTokens: 4096,
@@ -235,6 +235,7 @@ Available Scenarios:
   auth-protected-api (alias: sc-auth-api)
   auth-password-reset (alias: sc-pass-reset)
   data-model-feature  (alias: sc-data-model)
+  profile-validation  (alias: sc-profile-val)
 `);
     process.exit(0);
   }

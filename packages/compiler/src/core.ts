@@ -134,8 +134,19 @@ export class ContextCompilerCore {
     // ------------------------------------------------------------------------
     // 2. Facts (Level 3: PROJECT BRAIN)
     // ------------------------------------------------------------------------
-    // Only VERIFIED facts are compiled.
-    let candidateFacts = snapshot.projectFacts.filter((f) => f.status === 'VERIFIED');
+    // Resolve current fact per key using append-only BrainStore persistence
+    // semantics (latest entry per trimmed key supersedes older revisions).
+    const currentFactsByKey = new Map<string, (typeof snapshot.projectFacts)[number]>();
+    for (const f of snapshot.projectFacts) {
+      const k = f.key.trim();
+      if (!k) continue;
+      currentFactsByKey.set(k, { ...f, key: k });
+    }
+
+    // Only current VERIFIED facts are compiled; superseded revisions are never admitted.
+    let candidateFacts = Array.from(currentFactsByKey.values()).filter(
+      (f) => f.status === 'VERIFIED'
+    );
 
     if (snapshot.request.tags && snapshot.request.tags.length > 0) {
       const tags = snapshot.request.tags.map((t) => t.toLowerCase());
@@ -364,7 +375,23 @@ export class ContextCompilerCore {
     }
 
     // ------------------------------------------------------------------------
-    // 5. Metadata
+    // 5. Environment Conventions
+    // ------------------------------------------------------------------------
+    let environmentConventions = undefined;
+    if (snapshot.environmentConventions && snapshot.environmentConventions.items.length > 0) {
+      environmentConventions = {
+        items: snapshot.environmentConventions.items.map((item) => ({
+          key: sanitize(item.key),
+          value: sanitize(item.value),
+          nature: item.nature,
+          provenance: sanitize(item.provenance),
+          ...(item.sourceLocation ? { sourceLocation: sanitize(item.sourceLocation) } : {}),
+        })),
+      };
+    }
+
+    // ------------------------------------------------------------------------
+    // 6. Metadata
     // ------------------------------------------------------------------------
     const metadata: CompiledContextMetadata = {
       projectId: snapshot.request.projectId,
@@ -385,6 +412,7 @@ export class ContextCompilerCore {
       facts: compiledFacts,
       ...(upstreamWork ? { upstreamWork } : {}),
       ...(gitState ? { gitState } : {}),
+      ...(environmentConventions ? { environmentConventions } : {}),
     };
   }
 }

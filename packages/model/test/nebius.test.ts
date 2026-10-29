@@ -74,6 +74,38 @@ describe('NebiusModelClient', () => {
     });
   });
 
+  it('normalizes model name by stripping optional provider prefix', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: 'cmpl-456',
+        model: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              role: 'assistant',
+              content: 'OK',
+            },
+          },
+        ],
+      }),
+    });
+
+    const client = new NebiusModelClient({
+      apiKey: 'test-secret-key-12345',
+      fetchFn: mockFetch as unknown as typeof fetch,
+    });
+
+    await client.complete({
+      model: 'nebius/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
+      messages: [{ role: 'user', content: 'Hi' }],
+    });
+
+    const parsedBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(parsedBody.model).toBe('nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B');
+  });
+
   it('handles tool calls correctly', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
@@ -321,6 +353,34 @@ describe('NebiusModelClient', () => {
       ).rejects.toThrowError(
         'Model identifier is required. Specify model in ModelRequest or configure defaultModel in NebiusClientOptions.'
       );
+    });
+
+    it('resolves correct regional endpoints for multi-agent models from registry', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          id: 'cmpl-reg',
+          model: 'test',
+          choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'OK' } }],
+        }),
+      });
+
+      const client = new NebiusModelClient({
+        apiKey: 'test-key',
+        fetchFn: mockFetch as unknown as typeof fetch,
+      });
+
+      // Role A: Planner (GLM-5.3-Flash -> us-north1)
+      await client.complete({ model: 'zai-org/GLM-5.3-Flash', messages: [{ role: 'user', content: 'Plan' }] });
+      expect(mockFetch.mock.calls[0][0]).toBe('https://api.tokenfactory.us-north1.nebius.com/v1/chat/completions');
+
+      // Role B: Implementer (Kimi-K2.6 -> us-central1)
+      await client.complete({ model: 'moonshotai/Kimi-K2.6', messages: [{ role: 'user', content: 'Code' }] });
+      expect(mockFetch.mock.calls[1][0]).toBe('https://api.tokenfactory.us-central1.nebius.com/v1/chat/completions');
+
+      // Role C: Reviewer (Nemotron-3.5-Super-VL -> us-north1)
+      await client.complete({ model: 'nvidia/Nemotron-3.5-Super-VL', messages: [{ role: 'user', content: 'Review' }] });
+      expect(mockFetch.mock.calls[2][0]).toBe('https://api.tokenfactory.us-north1.nebius.com/v1/chat/completions');
     });
   });
 });

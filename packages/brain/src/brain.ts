@@ -1,8 +1,11 @@
 import type {
   Decision,
+  DeriveTrustStateOptions,
   Handoff,
   Project,
   ProjectFact,
+  PromoteTaskOptions,
+  PromotionResult,
   Task,
   TaskAttempt,
   TaskMetrics,
@@ -14,6 +17,7 @@ export interface CreateProjectInput {
   id: string;
   name: string;
   createdAt?: string;
+  ownerId?: string;
 }
 
 export interface AddProjectFactInput {
@@ -41,6 +45,7 @@ export interface BrainStore {
   // Project operations
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(id: string): Promise<Project | null>;
+  listProjects(ownerId?: string): Promise<Project[]>;
 
   // Fact operations (append-only)
   addProjectFact(projectId: string, input: AddProjectFactInput): Promise<ProjectFact>;
@@ -70,8 +75,10 @@ export interface BrainStore {
   getActiveDecisions(projectId: string): Promise<Decision[]>;
 
   // Derived state & history
-  deriveTaskTrustState(taskId: string): Promise<TaskTrustState>;
+  deriveTaskTrustState(taskId: string, options?: DeriveTrustStateOptions): Promise<TaskTrustState>;
+  promoteTask(taskId: string, options: PromoteTaskOptions): Promise<PromotionResult>;
   markTaskBlocked(taskId: string, reason?: string): Promise<void>;
+  unblockTask(taskId: string): Promise<void>;
   getTaskHistory(taskId: string): Promise<TaskAttempt[]>;
   getTaskMetrics(taskId: string): Promise<TaskMetrics>;
 }

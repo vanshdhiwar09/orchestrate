@@ -15,14 +15,26 @@ import {
 import { sealEvidence } from './evidence-sealer.js';
 import { InstrumentedModelClient } from './instrumented-model-client.js';
 import { InstrumentedToolRegistry } from './instrumented-tool-registry.js';
+import { BudgetExceededError, type TokenBudgetGuard } from './budget-guard.js';
 import type {
+  ArmBudgetTelemetry,
   ArmExecutionInput,
   ArmExecutionResult,
   BenchmarkWorkspace,
   ExecutionOutcome,
+  ExecutionPhase,
   RawExecutionEvidence,
   WorkspaceFactory,
 } from './types.js';
+
+export class TaskTimeoutError extends Error {
+  public readonly timeoutMs: number;
+  constructor(message: string, timeoutMs: number) {
+    super(message);
+    this.name = 'TaskTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
 
 export interface AgentExecutionAdapterOptions {
   /**
@@ -59,6 +71,16 @@ export interface AgentExecutionAdapterOptions {
    * Optional custom secrets for field-aware redaction.
    */
   customSecrets?: string[];
+
+  /**
+   * Optional shared token budget guard across all calls in the evaluation session.
+   */
+  budgetGuard?: TokenBudgetGuard;
+
+  /**
+   * Optional overall wall-clock task timeout in milliseconds.
+   */
+  taskTimeoutMs?: number;
 }
 
 function defaultToolFactory(
@@ -95,6 +117,8 @@ export class AgentExecutionAdapter {
   private readonly cleanupWorkspace: boolean;
   private readonly maxIterations: number;
   private readonly customSecrets?: string[];
+  private readonly budgetGuard?: TokenBudgetGuard;
+  private readonly taskTimeoutMs?: number;
 
   constructor(options: AgentExecutionAdapterOptions) {
     if (!options?.workspaceFactory) {
@@ -110,6 +134,8 @@ export class AgentExecutionAdapter {
     this.cleanupWorkspace = options.cleanupWorkspace ?? false;
     this.maxIterations = options.maxIterations ?? 30;
     this.customSecrets = options.customSecrets;
+    this.budgetGuard = options.budgetGuard;
+    this.taskTimeoutMs = options.taskTimeoutMs;
   }
 
   /**
@@ -132,15 +158,29 @@ export class AgentExecutionAdapter {
     let sequenceCounter = 1;
     const sequenceProvider = () => sequenceCounter++;
 
+    // AbortController for task timeout and in-flight cancellation
+    const abortController = new AbortController();
+
+    let currentPhase: ExecutionPhase = 'INITIALIZING';
+    let budgetExhausted = false;
+
     // 3. Instrument Model Client
     const instrumentedModel = new InstrumentedModelClient({
       modelClient: this.modelClient,
       sequenceProvider,
       customSecrets: this.customSecrets,
+      budgetGuard: this.budgetGuard,
+      abortSignal: abortController.signal,
+      onCall: () => {
+        currentPhase = 'EXECUTING_TOOL';
+      },
     });
 
     // 4. Instrument Tool Registry
-    const executor = new LocalCommandExecutor({ workspaceRoot: benchWorkspace.path });
+    const executor = new LocalCommandExecutor({
+      workspaceRoot: benchWorkspace.path,
+      signal: abortController.signal,
+    });
     const baseTools = this.toolRegistryFactory(
       benchWorkspace.workspace,
       executor,
@@ -149,6 +189,10 @@ export class AgentExecutionAdapter {
     const instrumentedTools = new InstrumentedToolRegistry(baseTools, {
       sequenceProvider,
       customSecrets: this.customSecrets,
+      abortSignal: abortController.signal,
+      onCall: () => {
+        currentPhase = 'AWAITING_MODEL';
+      },
     });
 
     // 5. Construct AgentRunner
@@ -159,16 +203,20 @@ export class AgentExecutionAdapter {
       maxIterations: this.maxIterations,
     });
 
-    // 6. Execute Agent Loop
+    // 6. Execute Agent Loop with Task Timeout Enforcement
     const startedAt = new Date().toISOString();
     const startTimeMs = performance.now();
 
     let outcome: ExecutionOutcome = 'COMPLETED';
     let finalResponse: { content: string | null; finishReason?: string } | null = null;
     let executionError: { message: string; stack?: string } | undefined = undefined;
+    const effectiveTimeoutMs = input.taskTimeoutMs ?? this.taskTimeoutMs;
+    let timeoutTimer: NodeJS.Timeout | null = null;
+    let didTimeout = false;
 
     try {
-      const runResult = await runner.run({
+      currentPhase = 'AWAITING_MODEL';
+      const runnerPromise = runner.run({
         task: input.taskBPrompt,
         systemPrompt: input.systemPrompt,
         model: input.controlFingerprint.modelIdentity,
@@ -176,17 +224,62 @@ export class AgentExecutionAdapter {
         maxTokens: input.samplingConfig?.maxTokens,
       });
 
+      let runResult;
+      if (typeof effectiveTimeoutMs === 'number' && effectiveTimeoutMs > 0) {
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutTimer = setTimeout(() => {
+            didTimeout = true;
+            const err = new TaskTimeoutError(
+              `Task execution exceeded timeout limit of ${effectiveTimeoutMs}ms.`,
+              effectiveTimeoutMs
+            );
+            abortController.abort(err);
+            reject(err);
+          }, effectiveTimeoutMs);
+        });
+
+        runResult = await Promise.race([runnerPromise, timeoutPromise]);
+      } else {
+        runResult = await runnerPromise;
+      }
+
+      currentPhase = 'COMPLETED';
       finalResponse = {
         content: runResult.response.message.content,
         finishReason: runResult.response.finishReason,
       };
     } catch (err: unknown) {
       outcome = 'FAILED';
+      const isBudgetExceeded =
+        err instanceof BudgetExceededError ||
+        (err instanceof Error && err.name === 'BudgetExceededError') ||
+        (err instanceof Error && err.message.includes('Token budget exceeded')) ||
+        (err instanceof Error && err.message.includes('Token budget exhausted'));
+
+      if (isBudgetExceeded) {
+        budgetExhausted = true;
+      }
+
       const message = err instanceof Error ? err.message : String(err);
       const stack = err instanceof Error ? err.stack : undefined;
-      executionError = { message, stack };
+      const code = isBudgetExceeded
+        ? 'BUDGET_EXHAUSTED'
+        : didTimeout
+          ? 'TASK_TIMEOUT'
+          : err instanceof Error && typeof (err as any).code === 'string'
+            ? (err as any).code
+            : undefined;
+      executionError = { message, stack, ...(code ? { code } : {}) };
     } finally {
-      if (this.cleanupWorkspace) {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+      }
+
+      // Finalize instrumentation BEFORE workspace cleanup or evidence collection
+      instrumentedModel.finalize();
+      instrumentedTools.finalize();
+
+      if (this.cleanupWorkspace || didTimeout) {
         try {
           await benchWorkspace.cleanup();
         } catch {
@@ -203,6 +296,21 @@ export class AgentExecutionAdapter {
     const toolEvents = instrumentedTools.getEvents();
     const usage = instrumentedModel.getAggregateUsage();
 
+    const budgetTelemetry: ArmBudgetTelemetry | undefined = this.budgetGuard
+      ? {
+          arm_limit:
+            this.budgetGuard.localLimit ??
+            (this.budgetGuard.policy === 'CONTROLLED_PER_ARM_BUDGET' ? this.budgetGuard.limit : null),
+          arm_consumed: this.budgetGuard.consumed,
+          aggregate_limit: this.budgetGuard.parent ? this.budgetGuard.parent.limit : this.budgetGuard.limit,
+          aggregate_consumed: this.budgetGuard.parent ? this.budgetGuard.parent.consumed : this.budgetGuard.consumed,
+          policy: this.budgetGuard.policy,
+          warning_thresholds: this.budgetGuard.warningThresholds,
+          warnings_triggered: this.budgetGuard.triggeredWarningThresholds,
+          budget_exhausted: budgetExhausted,
+        }
+      : undefined;
+
     const unsealedEvidence: Omit<RawExecutionEvidence, 'evidenceContentHash'> = {
       trialId: input.trialId,
       armId: input.armId,
@@ -213,10 +321,13 @@ export class AgentExecutionAdapter {
       completedAt,
       durationMs,
       outcome,
+      phase: currentPhase,
+      budgetExhausted,
       modelEvents,
       toolEvents,
       finalResponse,
       usage,
+      ...(budgetTelemetry ? { budget: budgetTelemetry } : {}),
       ...(executionError ? { error: executionError } : {}),
     };
 

@@ -23,10 +23,10 @@ const MAX_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 1_048_576; // 1 MiB per stream
 
 /**
- * Credentials and sensitive host environment variables that must not be
- * forwarded to child processes.
+ * Credentials and sensitive host environment variables that must never be
+ * forwarded to child processes under any circumstances.
  */
-const BLOCKED_ENV_KEYS = [
+export const BLOCKED_ENV_KEYS: string[] = [
   'NEBIUS_API_KEY',
   'OPENAI_API_KEY',
   'ANTHROPIC_API_KEY',
@@ -36,7 +36,37 @@ const BLOCKED_ENV_KEYS = [
   'AWS_SESSION_TOKEN',
   'AZURE_CLIENT_SECRET',
   'GCP_SERVICE_ACCOUNT_KEY',
+  'DATABASE_URL',
+  'JWT_SECRET',
+  'SESSION_SECRET',
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'VERCEL_TOKEN',
 ];
+
+/**
+ * Strict minimal environment allowlist for child processes.
+ * Untrusted agent commands only receive variables explicitly allowed here.
+ * Host credentials, tokens, and database URLs are never forwarded by default.
+ */
+export const DEFAULT_ENV_ALLOWLIST: Set<string> = new Set([
+  'NODE_ENV',
+  'PATH',
+  'PATHEXT',
+  'SYSTEMROOT',
+  'COMSPEC',
+  'WINDIR',
+  'TEMP',
+  'TMP',
+  'TMPDIR',
+  'HOME',
+  'USERPROFILE',
+  'APPDATA',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+]);
 
 export interface LocalCommandExecutorOptions {
   /**
@@ -44,17 +74,33 @@ export interface LocalCommandExecutorOptions {
    * containment boundary for any caller-supplied cwd.
    */
   workspaceRoot: string;
+  /**
+   * Optional AbortSignal to cancel running subprocesses.
+   */
+  signal?: AbortSignal;
+  /**
+   * Optional additional allowed environment variables (checked against blocked keys).
+   */
+  extraAllowedEnvKeys?: string[];
+  /**
+   * Optional explicit extra environment variables to provide to the subprocess.
+   */
+  extraEnv?: Record<string, string>;
 }
 
 export class LocalCommandExecutor implements CommandExecutor {
-  private readonly workspaceRoot: string;
+  public readonly workspaceRoot: string;
+  private readonly signal?: AbortSignal;
+  private readonly options: LocalCommandExecutorOptions;
   private realRootCache?: string;
 
   constructor(options: LocalCommandExecutorOptions) {
     if (!options?.workspaceRoot?.trim()) {
       throw new Error('LocalCommandExecutor requires a non-empty workspaceRoot option.');
     }
+    this.options = options;
     this.workspaceRoot = resolve(options.workspaceRoot);
+    this.signal = options.signal;
   }
 
   // ── Path-boundary helpers ───────────────────────────────────────────────────
@@ -136,13 +182,34 @@ export class LocalCommandExecutor implements CommandExecutor {
 
   private buildSafeEnv(): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
+    const allowlist = new Set<string>();
+    for (const key of DEFAULT_ENV_ALLOWLIST) {
+      allowlist.add(key.toUpperCase());
+    }
+    if (this.options?.extraAllowedEnvKeys) {
+      for (const key of this.options.extraAllowedEnvKeys) {
+        allowlist.add(key.toUpperCase());
+      }
+    }
+
+    const blockedUpper = BLOCKED_ENV_KEYS.map((k) => k.toUpperCase());
+
     for (const [key, value] of Object.entries(process.env)) {
+      if (value === undefined) continue;
       const upperKey = key.toUpperCase();
-      const blocked = BLOCKED_ENV_KEYS.some((b) => upperKey === b.toUpperCase());
-      if (!blocked) {
+      if (allowlist.has(upperKey) && !blockedUpper.includes(upperKey)) {
         env[key] = value;
       }
     }
+
+    if (this.options?.extraEnv) {
+      for (const [key, value] of Object.entries(this.options.extraEnv)) {
+        if (!blockedUpper.includes(key.toUpperCase())) {
+          env[key] = value;
+        }
+      }
+    }
+
     return env;
   }
 
@@ -293,8 +360,14 @@ export class LocalCommandExecutor implements CommandExecutor {
     }
     const normalizedCommand = command.trim();
     if (!ALLOWED_EXECUTABLES.has(normalizedCommand)) {
+      let hint = '';
+      if (['ls', 'dir', 'find'].includes(normalizedCommand)) {
+        hint = ' To list files, run "git" with args ["ls-files"] or ["status"].';
+      } else if (['cat', 'type', 'head', 'tail'].includes(normalizedCommand)) {
+        hint = ' To inspect file contents, use the "read_file" tool.';
+      }
       throw new Error(
-        `Command not allowed: "${normalizedCommand}". Allowed executables: ${[...ALLOWED_EXECUTABLES].join(', ')}.`
+        `Command not allowed: "${normalizedCommand}". Allowed executables: ${[...ALLOWED_EXECUTABLES].join(', ')}.${hint}`
       );
     }
 
@@ -345,6 +418,7 @@ export class LocalCommandExecutor implements CommandExecutor {
         shell: false,
         cwd: resolvedCwd,
         env,
+        signal: options?.signal ?? this.signal,
         // stdin is not piped; child inherits /dev/null effectively via execFile
       });
 

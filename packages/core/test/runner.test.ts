@@ -707,4 +707,91 @@ describe('AgentRunner', () => {
       expect(execErr.usage?.estimated_cost_usd).toBeNull();
     }
   });
+
+  it('15. breaks infinite loop when identical duplicate tool calls are emitted repeatedly', async () => {
+    const workspace = new FakeWorkspace();
+    const registry = createDefaultToolRegistry({ workspace });
+    const duplicateToolResponse: ModelResponse = {
+      id: 'tool-call-rep',
+      model: 'test-model',
+      finishReason: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          {
+            id: 'tc-repeat',
+            name: 'write_file',
+            arguments: { path: 'same.ts', content: 'export const x = 1;' },
+          },
+        ],
+      },
+    };
+
+    const fakeClient = new FakeModelClient([
+      duplicateToolResponse,
+      duplicateToolResponse,
+      duplicateToolResponse,
+    ]);
+
+    const runner = new AgentRunner({
+      modelClient: fakeClient,
+      defaultModel: 'test-model',
+      toolRegistry: registry,
+      maxIterations: 10,
+    });
+
+    const result = await runner.run({ task: 'Duplicate test' });
+    expect(result.response.finishReason).toBe('stop');
+    expect(result.iterations).toBe(3);
+    expect(await workspace.readFile('same.ts')).toBe('export const x = 1;');
+  });
+
+  it('16. emits execution events on each step to onEvent callback', async () => {
+    const workspace = new FakeWorkspace();
+    const registry = createDefaultToolRegistry({ workspace });
+    const toolCallResponse: ModelResponse = {
+      id: 'call-1',
+      model: 'test-model',
+      finishReason: 'tool_calls',
+      message: {
+        role: 'assistant',
+        toolCalls: [
+          {
+            id: 'tc-1',
+            name: 'write_file',
+            arguments: { path: 'a.txt', content: 'hello' },
+          },
+        ],
+      },
+    };
+    const finalResponse: ModelResponse = {
+      id: 'call-2',
+      model: 'test-model',
+      finishReason: 'stop',
+      message: {
+        role: 'assistant',
+        content: 'Finished writing a.txt',
+      },
+    };
+
+    const fakeClient = new FakeModelClient([toolCallResponse, finalResponse]);
+    const runner = new AgentRunner({
+      modelClient: fakeClient,
+      defaultModel: 'test-model',
+      toolRegistry: registry,
+    });
+
+    const events: any[] = [];
+    await runner.run({
+      task: 'Write a.txt',
+      onEvent: (e) => events.push(e),
+    });
+
+    expect(events.some((e) => e.type === 'round_start')).toBe(true);
+    expect(events.some((e) => e.type === 'model_response')).toBe(true);
+    expect(events.some((e) => e.type === 'tool_start' && e.tool === 'write_file')).toBe(true);
+    expect(events.some((e) => e.type === 'tool_complete' && e.tool === 'write_file')).toBe(true);
+    expect(events.some((e) => e.type === 'round_complete')).toBe(true);
+  });
 });

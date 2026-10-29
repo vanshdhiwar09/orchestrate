@@ -47,6 +47,7 @@ import {
 import type { ArtifactManifest } from '../manifest/types.js';
 import { resolveSuppliedContextForArm } from './context-derivation.js';
 import { SCENARIO_CATALOG } from '../scenarios/catalog.js';
+import type { TokenBudgetGuard } from './budget-guard.js';
 
 /**
  * Maps raw tool invocation events to DiscoveryEvents according to M5/M7 discovery contract.
@@ -297,6 +298,7 @@ export interface TrialRunnerDependencies {
   reworkEvaluator?: ReworkEvaluator;
   executor?: CommandExecutor;
   customSecrets?: string[];
+  budgetGuard?: TokenBudgetGuard;
 }
 
 /**
@@ -445,6 +447,7 @@ export class TrialRunner {
 
     // 6. Sequential execution in randomized order
     for (const armId of trial.executionOrder) {
+      console.log(`\n>>> [ORCHESTRATE BENCHMARK] Starting Arm: ${armId} (Step ${trial.executionOrder.indexOf(armId) + 1}/${trial.executionOrder.length})`);
       const armRecord = trial.arms![armId];
       let workspace: BenchmarkWorkspace | null = null;
       let rawEvidence: RawExecutionEvidence | null = null;
@@ -455,6 +458,28 @@ export class TrialRunner {
       let armStatus: ArmExecutionStatus = 'COMPLETED';
 
       try {
+        // Provision child budget guard matching the configured policy
+        const policy =
+          trial.controls.budgetPolicy ??
+          this.dependencies.budgetGuard?.policy ??
+          'ADAPTIVE_SESSION_BUDGET';
+        const isControlled = policy === 'CONTROLLED_PER_ARM_BUDGET';
+
+        const armLimit = isControlled
+          ? (trial.controls.maxTokensPerArm ??
+              (this.dependencies.budgetGuard
+                ? Math.floor(this.dependencies.budgetGuard.limit / trial.executionOrder.length)
+                : undefined))
+          : trial.controls.maxTokensPerArm; // undefined in adaptive mode allows sharing full session capacity
+
+        const armBudgetGuard = this.dependencies.budgetGuard
+          ? this.dependencies.budgetGuard.createChild({
+              maxTokens: armLimit,
+              label: `Arm-${armId}`,
+              policy,
+            })
+          : this.dependencies.budgetGuard;
+
         // A. Run Agent B in isolated workspace via AgentExecutionAdapter
         const agentAdapter =
           this.dependencies.agentAdapter ??
@@ -462,6 +487,9 @@ export class TrialRunner {
             workspaceFactory: this.dependencies.workspaceFactory,
             modelClient: this.dependencies.modelClient,
             customSecrets: this.dependencies.customSecrets,
+            maxIterations: trial.controls.maxSteps,
+            taskTimeoutMs: trial.controls.taskTimeoutMs,
+            budgetGuard: armBudgetGuard,
             cleanupWorkspace: false, // preserved for verification and diff capture
           });
 
@@ -568,6 +596,8 @@ export class TrialRunner {
         discoveryReport,
         reworkReport,
       });
+
+      console.log(`<<< [ORCHESTRATE BENCHMARK] Completed Arm: ${armId} | Outcome: ${armStatus} | Verification: ${verificationEvidence?.status ?? 'NONE'} | Duration: ${rawEvidence?.durationMs ?? 0}ms | Tokens: ${rawEvidence?.usage.total_tokens ?? 0}`);
     }
 
     // 7. Transition to EVIDENCE_CAPTURED

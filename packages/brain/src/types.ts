@@ -37,6 +37,7 @@ export interface Project {
   name: string;
   facts: ProjectFact[];
   createdAt: string;
+  ownerId?: string;
 }
 
 /**
@@ -73,6 +74,14 @@ export interface Handoff {
   createdAt: string;
 }
 
+export interface SourceSnapshotIdentity {
+  fingerprint: string;
+  capturedAt: string;
+  fileCount?: number;
+  commitSha?: string | null;
+  dirty?: boolean;
+}
+
 /**
  * Independent verification evidence for a specific task attempt.
  * Wraps VerificationResult without redefining verification types.
@@ -85,6 +94,82 @@ export interface VerificationRecord {
   handoffId?: string;
   result: VerificationResult;
   recordedAt: string;
+  sourceSnapshot?: SourceSnapshotIdentity;
+}
+
+export class SourceFreshnessError extends Error {
+  public readonly code: 'SOURCE_FRESHNESS_MISMATCH' | 'SOURCE_SNAPSHOT_MISSING' | 'SOURCE_FINGERPRINT_FAILED';
+  public readonly taskId: string;
+  public readonly attemptNumber?: number;
+  public readonly expectedFingerprint?: string;
+  public readonly actualFingerprint?: string;
+
+  constructor(
+    code: 'SOURCE_FRESHNESS_MISMATCH' | 'SOURCE_SNAPSHOT_MISSING' | 'SOURCE_FINGERPRINT_FAILED',
+    taskId: string,
+    attemptNumber?: number,
+    expectedFingerprint?: string,
+    actualFingerprint?: string,
+    message?: string
+  ) {
+    super(
+      message ??
+        `Source freshness violation for task "${taskId}" (attempt ${attemptNumber ?? 'unknown'}): code=${code}`
+    );
+    this.name = 'SourceFreshnessError';
+    this.code = code;
+    this.taskId = taskId;
+    this.attemptNumber = attemptNumber;
+    this.expectedFingerprint = expectedFingerprint;
+    this.actualFingerprint = actualFingerprint;
+  }
+}
+
+export class PromotionError extends Error {
+  public readonly code:
+    | 'TASK_NOT_VERIFIED'
+    | 'ATTEMPT_MISMATCH'
+    | 'TASK_BLOCKED'
+    | 'TASK_NOT_FOUND'
+    | 'SOURCE_SNAPSHOT_MISSING';
+  public readonly taskId: string;
+
+  constructor(
+    code:
+      | 'TASK_NOT_VERIFIED'
+      | 'ATTEMPT_MISMATCH'
+      | 'TASK_BLOCKED'
+      | 'TASK_NOT_FOUND'
+      | 'SOURCE_SNAPSHOT_MISSING',
+    taskId: string,
+    message?: string
+  ) {
+    super(message ?? `Promotion failed for task "${taskId}": code=${code}`);
+    this.name = 'PromotionError';
+    this.code = code;
+    this.taskId = taskId;
+  }
+}
+
+export interface DeriveTrustStateOptions {
+  workspaceRoot?: string;
+  currentFingerprint?: string;
+  requireFreshness?: boolean;
+  computeSnapshotFn?: (workspaceRoot: string) => Promise<SourceSnapshotIdentity>;
+}
+
+export interface PromoteTaskOptions {
+  workspaceRoot: string;
+  expectedAttemptNumber?: number;
+  computeSnapshotFn?: (workspaceRoot: string) => Promise<SourceSnapshotIdentity>;
+}
+
+export interface PromotionResult {
+  taskId: string;
+  attemptNumber: number;
+  status: 'VERIFIED';
+  sourceSnapshot: SourceSnapshotIdentity;
+  promotedAt: string;
 }
 
 /**

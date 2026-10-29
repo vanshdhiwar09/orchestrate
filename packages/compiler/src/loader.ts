@@ -1,10 +1,16 @@
+import { readFile as fsReadFile } from 'node:fs/promises';
+import { resolve as pathResolve } from 'node:path';
 import type { BrainStore } from '@orchestrate/brain';
 import type { GitRepository } from '@orchestrate/workspace';
+import { RepositoryConventionExtractor } from './conventions.js';
 import type { CompilationRequest, CompilationSnapshot, GitSnapshotData } from './types.js';
 
 export interface ContextLoaderOptions {
   brain: BrainStore;
   git?: GitRepository;
+  readFile?: (path: string) => Promise<string | null>;
+  candidateFiles?: string[];
+  workspaceRoot?: string;
 }
 
 /**
@@ -16,10 +22,16 @@ export interface ContextLoaderOptions {
 export class ContextLoader {
   private readonly brain: BrainStore;
   private readonly git?: GitRepository;
+  private readonly readFileFn?: (path: string) => Promise<string | null>;
+  private readonly candidateFiles?: string[];
+  private readonly workspaceRoot?: string;
 
   constructor(options: ContextLoaderOptions) {
     this.brain = options.brain;
     this.git = options.git;
+    this.readFileFn = options.readFile;
+    this.candidateFiles = options.candidateFiles;
+    this.workspaceRoot = options.workspaceRoot;
   }
 
   /**
@@ -32,9 +44,14 @@ export class ContextLoader {
     let upstreamTrustState = undefined;
     let upstreamAttempts: CompilationSnapshot['upstreamAttempts'] = [];
 
+    const effectiveWorkspace = request.workspaceRoot ?? this.workspaceRoot;
+
     if (request.upstreamTaskId) {
       upstreamTask = await this.brain.getTask(request.upstreamTaskId);
-      upstreamTrustState = await this.brain.deriveTaskTrustState(request.upstreamTaskId);
+      upstreamTrustState = await this.brain.deriveTaskTrustState(
+        request.upstreamTaskId,
+        effectiveWorkspace ? { workspaceRoot: effectiveWorkspace } : undefined
+      );
       upstreamAttempts = await this.brain.getTaskHistory(request.upstreamTaskId);
     }
 
@@ -72,6 +89,39 @@ export class ContextLoader {
       }
     }
 
+    // ------------------------------------------------------------------------
+    // Environment Conventions Extraction
+    // ------------------------------------------------------------------------
+    let reader = this.readFileFn;
+    if (!reader && this.workspaceRoot) {
+      const root = this.workspaceRoot;
+      reader = async (relPath: string) => {
+        try {
+          return await fsReadFile(pathResolve(root, relPath), 'utf8');
+        } catch {
+          return null;
+        }
+      };
+    }
+
+    let candidateFiles = this.candidateFiles ?? [];
+    if (candidateFiles.length === 0 && gitSnapshot) {
+      candidateFiles = [
+        ...gitSnapshot.status.staged.map((f: any) => (typeof f === 'string' ? f : f?.path)),
+        ...gitSnapshot.status.unstaged.map((f: any) => (typeof f === 'string' ? f : f?.path)),
+        ...gitSnapshot.status.untracked.map((f: any) => (typeof f === 'string' ? f : f?.path)),
+      ].filter((p): p is string => typeof p === 'string' && p.trim() !== '');
+    }
+
+    const rawConventions = await RepositoryConventionExtractor.extract({
+      readFile: reader ?? (async () => null),
+      candidateFiles,
+      existingFacts: projectFacts,
+    });
+
+    const environmentConventions =
+      rawConventions && rawConventions.items.length > 0 ? rawConventions : null;
+
     return {
       request,
       targetTask,
@@ -81,6 +131,7 @@ export class ContextLoader {
       activeDecisions,
       projectFacts,
       git: gitSnapshot,
+      environmentConventions,
     };
   }
 }

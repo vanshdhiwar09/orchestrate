@@ -3,6 +3,7 @@ import type { Workspace } from '@orchestrate/workspace';
 import type { Tool } from '../src/tools.js';
 import {
   createDefaultToolRegistry,
+  createExecuteCommandTool,
   createReadFileTool,
   createWriteFileTool,
   getProjectInfoTool,
@@ -227,6 +228,89 @@ describe('ToolRegistry, read_file & write_file Tools', () => {
 
     const toolNames = registry.list().map((t) => t.name);
     expect(toolNames).toEqual(['get_project_info', 'read_file', 'write_file']);
+  });
+
+  it('15. execute_command description explains supported executables and alternatives to shell builtins', () => {
+    const fakeExecutor = {
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+      }),
+    };
+    const tool = createExecuteCommandTool(fakeExecutor);
+
+    expect(tool.description).toContain('node, npm, npx, tsc, git');
+    expect(tool.description).toContain('Shell built-ins and Unix utilities (e.g. ls, dir, find, cat, cd) are NOT supported');
+    expect(tool.description).toContain('run "git" with args ["ls-files"] or ["status"], or use the read_file tool');
+  });
+
+  it('16. execute_command validates command and args parameters with actionable feedback', async () => {
+    const fakeExecutor = {
+      execute: async () => ({
+        exitCode: 0,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+      }),
+    };
+    const tool = createExecuteCommandTool(fakeExecutor);
+
+    await expect(tool.execute({ command: '', args: [] })).rejects.toThrowError(
+      'execute_command requires a non-empty string "command" parameter.'
+    );
+
+    await expect(tool.execute({ command: 'git', args: undefined as any })).rejects.toThrowError(
+      'execute_command requires an array "args" parameter. Pass [] if no arguments are needed.'
+    );
+  });
+
+  it('17. read_file and write_file tool descriptions clarify primary role and prevent hallucinated editors', () => {
+    const fakeWs = new FakeWorkspace();
+    const writeTool = createWriteFileTool(fakeWs);
+    const readTool = createReadFileTool(fakeWs);
+
+    expect(writeTool.description).toContain('Creates or overwrites a file in the workspace');
+    expect(writeTool.description).toContain('specialized text editors or patch tools like str_replace_editor are NOT supported');
+    expect(writeTool.description).toContain('use write_file for all file modifications');
+
+    expect(readTool.description).toContain('Reads the full text contents of a file');
+    expect(readTool.description).toContain('use this instead of cat or specialized view tools');
+  });
+
+  it('18. execute_command handles space-delimited command strings and normalizes leading slashes in file tools', async () => {
+    let capturedCmd = '';
+    let capturedArgs: string[] = [];
+    const fakeExecutor = {
+      execute: async (cmd: string, args: string[]) => {
+        capturedCmd = cmd;
+        capturedArgs = args;
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout: 'pattern matched',
+          stderr: '',
+          timedOut: false,
+        };
+      },
+    };
+    const cmdTool = createExecuteCommandTool(fakeExecutor);
+    const result = await cmdTool.execute({ command: 'git grep pattern', args: [] });
+    expect(capturedCmd).toBe('git');
+    expect(capturedArgs).toEqual(['grep', 'pattern']);
+    expect(result.stdout).toBe('pattern matched');
+
+    const fakeWs = new FakeWorkspace();
+    const writeTool = createWriteFileTool(fakeWs);
+    const readTool = createReadFileTool(fakeWs);
+
+    await writeTool.execute({ path: './src/index.ts', content: 'export const ok = true;' });
+    const readRes = await readTool.execute({ path: '/src/index.ts' });
+    expect(readRes.path).toBe('src/index.ts');
+    expect(readRes.content).toBe('export const ok = true;');
   });
 });
 

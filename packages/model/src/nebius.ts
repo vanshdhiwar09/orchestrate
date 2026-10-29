@@ -7,6 +7,85 @@ import type {
   ToolCall,
 } from './types.js';
 
+export interface NebiusModelDescriptor {
+  modelId: string;
+  name: string;
+  role: 'planner' | 'implementer' | 'reviewer' | 'general';
+  endpoint: string;
+  contextWindow: number;
+  inputCostPer1M: number;
+  cachedInputCostPer1M: number;
+  outputCostPer1M: number;
+  capabilities: {
+    toolCalling: boolean;
+    reasoning: boolean;
+    vision: boolean;
+  };
+}
+
+export const NEBIUS_MODEL_REGISTRY: Record<string, NebiusModelDescriptor> = {
+  'zai-org/GLM-5.3-Flash': {
+    modelId: 'zai-org/GLM-5.3-Flash',
+    name: 'GLM-5.3-Flash',
+    role: 'planner',
+    endpoint: 'https://api.tokenfactory.us-north1.nebius.com/v1',
+    contextWindow: 131072,
+    inputCostPer1M: 0.15,
+    cachedInputCostPer1M: 0.03,
+    outputCostPer1M: 0.50,
+    capabilities: {
+      toolCalling: true,
+      reasoning: true,
+      vision: true,
+    },
+  },
+  'moonshotai/Kimi-K2.6': {
+    modelId: 'moonshotai/Kimi-K2.6',
+    name: 'Kimi-K2.6',
+    role: 'implementer',
+    endpoint: 'https://api.tokenfactory.us-central1.nebius.com/v1',
+    contextWindow: 262144,
+    inputCostPer1M: 0.95,
+    cachedInputCostPer1M: 0.16,
+    outputCostPer1M: 4.00,
+    capabilities: {
+      toolCalling: true,
+      reasoning: true,
+      vision: true,
+    },
+  },
+  'nvidia/Nemotron-3.5-Super-VL': {
+    modelId: 'nvidia/Nemotron-3.5-Super-VL',
+    name: 'Nemotron-3.5-Super-VL',
+    role: 'reviewer',
+    endpoint: 'https://api.tokenfactory.us-north1.nebius.com/v1',
+    contextWindow: 1048576,
+    inputCostPer1M: 0.30,
+    cachedInputCostPer1M: 0.06,
+    outputCostPer1M: 0.90,
+    capabilities: {
+      toolCalling: true,
+      reasoning: true,
+      vision: true,
+    },
+  },
+  'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B': {
+    modelId: 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B',
+    name: 'NVIDIA-Nemotron-3-Nano-30B-A3B',
+    role: 'general',
+    endpoint: 'https://api.tokenfactory.nebius.com/v1',
+    contextWindow: 32768,
+    inputCostPer1M: 0.20,
+    cachedInputCostPer1M: 0.05,
+    outputCostPer1M: 0.60,
+    capabilities: {
+      toolCalling: true,
+      reasoning: false,
+      vision: false,
+    },
+  },
+};
+
 export interface NebiusClientOptions {
   apiKey?: string;
   baseUrl?: string;
@@ -96,14 +175,23 @@ export class NebiusModelClient implements ModelClient {
   }
 
   async complete(request: ModelRequest): Promise<ModelResponse> {
-    const model = request.model || this.defaultModel;
-    if (!model) {
+    const rawModel = request.model || this.defaultModel;
+    if (!rawModel) {
       throw new Error(
         'Model identifier is required. Specify model in ModelRequest or configure defaultModel in NebiusClientOptions.'
       );
     }
+    // Normalize model ID by stripping optional "nebius/" prefix for provider compatibility
+    const model = rawModel.startsWith('nebius/') ? rawModel.slice('nebius/'.length) : rawModel;
 
-    const endpoint = `${this.baseUrl}/chat/completions`;
+    // Resolve model regional endpoint from registry if available and baseUrl is default/global
+    const regEntry = NEBIUS_MODEL_REGISTRY[model];
+    let effectiveBaseUrl = this.baseUrl;
+    if (regEntry?.endpoint && (this.baseUrl.includes('nebius.com') || !this.baseUrl)) {
+      effectiveBaseUrl = regEntry.endpoint;
+    }
+
+    const endpoint = `${effectiveBaseUrl}/chat/completions`;
 
     const openAiMessages = request.messages.map((msg) => {
       const formatted: Record<string, unknown> = {

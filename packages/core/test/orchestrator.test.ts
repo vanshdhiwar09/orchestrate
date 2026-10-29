@@ -558,4 +558,288 @@ describe('Orchestrator', () => {
       usage_available: true,
     });
   });
+
+  describe('Bounded Autonomous Repair & Human Intervention (Rule 9)', () => {
+    it('succeeds immediately on first attempt without triggering repair loop', async () => {
+      const orchestrator = new Orchestrator({
+        brain,
+        runner: createFakeRunner(),
+        verificationEngine: createFakeVerificationEngine(createPassingVerificationResult()),
+      });
+
+      const result = await orchestrator.executeTaskWithRepair({
+        projectId: 'proj-1',
+        taskId: 'task-1',
+        verificationPlan: defaultPlan,
+      });
+
+      expect(result.status).toBe('VERIFIED');
+      expect(result.attemptNumber).toBe(1);
+      expect(await brain.deriveTaskTrustState('task-1')).toBe('VERIFIED');
+    });
+
+    it('recovers on first repair attempt (Attempt 2) and derives VERIFIED state', async () => {
+      let runCount = 0;
+      const verificationEngine: TaskVerificationEngine = {
+        async run(): Promise<VerificationResult> {
+          runCount++;
+          return runCount === 1 ? createFailingVerificationResult() : createPassingVerificationResult();
+        },
+      };
+
+      const orchestrator = new Orchestrator({
+        brain,
+        runner: createFakeRunner(),
+        verificationEngine,
+      });
+
+      const result = await orchestrator.executeTaskWithRepair({
+        projectId: 'proj-1',
+        taskId: 'task-1',
+        verificationPlan: defaultPlan,
+      });
+
+      expect(runCount).toBe(2);
+      expect(result.status).toBe('VERIFIED');
+      expect(result.attemptNumber).toBe(2);
+      expect(await brain.deriveTaskTrustState('task-1')).toBe('VERIFIED');
+    });
+
+    it('bounds automated repair to maximum 2 attempts and transitions to BLOCKED_NEEDS_HUMAN when exhausted', async () => {
+      let runCount = 0;
+      const verificationEngine: TaskVerificationEngine = {
+        async run(): Promise<VerificationResult> {
+          runCount++;
+          return createFailingVerificationResult();
+        },
+      };
+
+      const orchestrator = new Orchestrator({
+        brain,
+        runner: createFakeRunner(),
+        verificationEngine,
+      });
+
+      const result = await orchestrator.executeTaskWithRepair({
+        projectId: 'proj-1',
+        taskId: 'task-1',
+        verificationPlan: defaultPlan,
+      });
+
+      // 1 initial attempt + 2 repair attempts = 3 total attempts
+      expect(runCount).toBe(3);
+      expect(result.status).toBe('FAILED');
+      expect(result.attemptNumber).toBe(3);
+
+      // Rule 9 invariant: task must transition to BLOCKED_NEEDS_HUMAN
+      const trustState = await brain.deriveTaskTrustState('task-1');
+      expect(trustState).toBe('BLOCKED_NEEDS_HUMAN');
+
+      // Attempting to execute a BLOCKED_NEEDS_HUMAN task throws until human intervenes
+      await expect(
+        orchestrator.executeTask({
+          projectId: 'proj-1',
+          taskId: 'task-1',
+          verificationPlan: defaultPlan,
+        })
+      ).rejects.toThrow('is in BLOCKED_NEEDS_HUMAN state. Human intervention is required');
+
+      // Human intervenes and unblocks the task
+      await brain.unblockTask('task-1');
+      expect(await brain.deriveTaskTrustState('task-1')).toBe('FAILED'); // reverts to derived state of latest attempt
+    });
+
+    it('evidence from failed attempt cannot authorize repaired attempt if repair verification fails', async () => {
+      let runCount = 0;
+      const verificationEngine: TaskVerificationEngine = {
+        async run(): Promise<VerificationResult> {
+          runCount++;
+          // Both attempt 1 and repair attempt 2 fail verification
+          return createFailingVerificationResult();
+        },
+      };
+
+      const orchestrator = new Orchestrator({
+        brain,
+        runner: createFakeRunner(),
+        verificationEngine,
+      });
+
+      const result = await orchestrator.executeTaskWithRepair(
+        {
+          projectId: 'proj-1',
+          taskId: 'task-1',
+          verificationPlan: defaultPlan,
+        },
+        { maxRepairAttempts: 1 }
+      );
+
+      expect(runCount).toBe(2);
+      expect(result.status).toBe('FAILED');
+      expect(await brain.deriveTaskTrustState('task-1')).toBe('BLOCKED_NEEDS_HUMAN');
+    });
+
+    it('verification infrastructure errors fail closed and never promote to VERIFIED', async () => {
+      const failingEngine: TaskVerificationEngine = {
+        async run(): Promise<VerificationResult> {
+          throw new Error('Verification runner infrastructure crashed: connection timeout');
+        },
+      };
+
+      const orchestrator = new Orchestrator({
+        brain,
+        runner: createFakeRunner(),
+        verificationEngine: failingEngine,
+      });
+
+      await expect(
+        orchestrator.executeTask({
+          projectId: 'proj-1',
+          taskId: 'task-1',
+          verificationPlan: defaultPlan,
+        })
+      ).rejects.toThrow('Verification runner infrastructure crashed');
+
+      // Task has an agent handoff (CLAIMED), but zero verification -> remains CLAIMED, NOT VERIFIED!
+      const state = await brain.deriveTaskTrustState('task-1');
+      expect(state).toBe('CLAIMED');
+      expect(state).not.toBe('VERIFIED');
+    });
+
+    it('a successful build check alone does not override failed acceptance checks', async () => {
+      const mixedResult: VerificationResult = {
+        status: 'FAILED',
+        checks: [
+          {
+            checkId: 'check-build',
+            name: 'Build',
+            command: 'npm run build',
+            args: [],
+            passed: true,
+            exitCode: 0,
+            signal: null,
+            stdout: 'Build succeeded',
+            stderr: '',
+            timedOut: false,
+            durationMs: 500,
+            verifiedAt: new Date().toISOString(),
+          },
+          {
+            checkId: 'check-acceptance',
+            name: 'Acceptance Tests',
+            command: 'npm test',
+            args: [],
+            passed: false,
+            exitCode: 1,
+            signal: null,
+            stdout: '',
+            stderr: 'Acceptance assertion failed',
+            timedOut: false,
+            durationMs: 200,
+            verifiedAt: new Date().toISOString(),
+          },
+        ],
+        executedAt: new Date().toISOString(),
+        totalDurationMs: 700,
+      };
+
+      const orchestrator = new Orchestrator({
+        brain,
+        runner: createFakeRunner(),
+        verificationEngine: {
+          async run(): Promise<VerificationResult> {
+            return mixedResult;
+          },
+        },
+      });
+
+      const res = await orchestrator.executeTask({
+        projectId: 'proj-1',
+        taskId: 'task-1',
+        verificationPlan: defaultPlan,
+      });
+
+      expect(res.status).toBe('FAILED');
+      expect(await brain.deriveTaskTrustState('task-1')).toBe('FAILED');
+    });
+
+    it('coordinates multi-agent pipeline with Planner and Reviewer models', async () => {
+      const calls: { model: string; prompt: string }[] = [];
+      const fakeModelClient = {
+        async complete(request: any): Promise<any> {
+          const userMsg = request.messages.find((m: any) => m.role === 'user');
+          calls.push({ model: request.model, prompt: userMsg?.content ?? '' });
+          if (request.model.includes('GLM')) {
+            return {
+              id: 'plan-1',
+              model: request.model,
+              message: {
+                role: 'assistant',
+                content: JSON.stringify({
+                  summary: 'Step-by-step plan for feature A',
+                  targetFiles: ['src/a.ts'],
+                  acceptanceCriteria: ['Must export fnA'],
+                  implementationSteps: ['Create src/a.ts'],
+                  risks: [],
+                }),
+              },
+              finishReason: 'stop',
+              usage: { promptTokens: 30, completionTokens: 40, totalTokens: 70 },
+            };
+          }
+          if (request.model.includes('Nemotron')) {
+            return {
+              id: 'review-1',
+              model: request.model,
+              message: {
+                role: 'assistant',
+                content: JSON.stringify({
+                  verdict: 'APPROVED',
+                  summary: 'Code looks clean and addresses all requirements.',
+                  findings: ['Clean structure'],
+                  potentialRegressions: [],
+                }),
+              },
+              finishReason: 'stop',
+              usage: { promptTokens: 30, completionTokens: 40, totalTokens: 70 },
+            };
+          }
+          return {
+            id: 'resp-1',
+            model: request.model,
+            message: { role: 'assistant', content: 'OK' },
+            finishReason: 'stop',
+            usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
+          };
+        },
+      };
+
+      const orchestrator = new Orchestrator({
+        brain,
+        runner: createFakeRunner('Implemented feature A', 'moonshotai/Kimi-K2.6'),
+        verificationEngine: createFakeVerificationEngine(createPassingVerificationResult()),
+        modelClient: fakeModelClient as any,
+      });
+
+      const events: any[] = [];
+      const res = await orchestrator.executeTask({
+        projectId: 'proj-1',
+        taskId: 'task-1',
+        verificationPlan: defaultPlan,
+        model: 'moonshotai/Kimi-K2.6',
+        enableMultiAgent: true,
+        plannerModel: 'zai-org/GLM-5.3-Flash',
+        reviewerModel: 'nvidia/Nemotron-3.5-Super-VL',
+        onProgress: (e) => events.push(e),
+      });
+
+      expect(res.status).toBe('VERIFIED');
+      expect(res.plan?.summary).toBe('Step-by-step plan for feature A');
+      expect(res.review?.verdict).toBe('APPROVED');
+      expect(calls.some((c) => c.model === 'zai-org/GLM-5.3-Flash')).toBe(true);
+      expect(calls.some((c) => c.model === 'nvidia/Nemotron-3.5-Super-VL')).toBe(true);
+      expect(events.some((e) => e.type === 'planner_start')).toBe(true);
+      expect(events.some((e) => e.type === 'reviewer_complete')).toBe(true);
+    });
+  });
 });

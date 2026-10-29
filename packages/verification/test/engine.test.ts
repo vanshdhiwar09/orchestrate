@@ -649,4 +649,174 @@ describe('VerificationEngine', () => {
       expect(plan).toEqual(originalPlanCopy);
     });
   });
+
+  describe('NodeNext ESM Early Module Resolution Gate', () => {
+    it('fails the verification gate when an applicable NodeNext ESM task has an extensionless relative import', async () => {
+      const files: Record<string, string> = {
+        'package.json': JSON.stringify({ type: 'module' }),
+        'tsconfig.json': JSON.stringify({
+          compilerOptions: { moduleResolution: 'NodeNext', allowImportingTsExtensions: true },
+        }),
+        'src/routes/profile.ts': `import { auth } from '../middleware/auth';`,
+      };
+
+      const executor = new FakeCommandExecutor();
+      // Set git ls-files to return the files
+      executor.setResponseForCommand('git', {
+        exitCode: 0,
+        signal: null,
+        stdout: 'src/routes/profile.ts',
+        stderr: '',
+        timedOut: false,
+      });
+
+      const engine = new VerificationEngine({
+        executor,
+        readFile: async (p) => files[p] ?? null,
+      });
+
+      const plan: VerificationPlan = {
+        checks: [{ id: 'runtime-test', name: 'Runtime Acceptance', command: 'node', args: ['--test'] }],
+      };
+
+      const result = await engine.verify(plan);
+
+      expect(result.status).toBe('FAILED');
+      const gateCheck = result.checks.find((c) => c.checkId === 'check-node-next-module-resolution');
+      expect(gateCheck).toBeDefined();
+      expect(gateCheck?.passed).toBe(false);
+      expect(gateCheck?.exitCode).toBe(1);
+      expect(gateCheck?.stderr).toContain('Relative import "../middleware/auth" is missing an explicit file extension');
+    });
+
+    it('passes the gate and proceeds to runtime acceptance checks when imports use explicit extensions', async () => {
+      const files: Record<string, string> = {
+        'package.json': JSON.stringify({ type: 'module' }),
+        'tsconfig.json': JSON.stringify({
+          compilerOptions: { moduleResolution: 'NodeNext', allowImportingTsExtensions: true },
+        }),
+        'src/routes/profile.ts': `import { auth } from '../middleware/auth.ts';`,
+      };
+
+      const executor = new FakeCommandExecutor();
+      executor.setResponseForCommand('git', {
+        exitCode: 0,
+        signal: null,
+        stdout: 'src/routes/profile.ts',
+        stderr: '',
+        timedOut: false,
+      });
+
+      const engine = new VerificationEngine({
+        executor,
+        readFile: async (p) => files[p] ?? null,
+      });
+
+      const plan: VerificationPlan = {
+        checks: [{ id: 'runtime-test', name: 'Runtime Acceptance', command: 'node', args: ['--test'] }],
+      };
+
+      const result = await engine.verify(plan);
+
+      expect(result.status).toBe('VERIFIED');
+      expect(result.checks).toHaveLength(2);
+
+      const runtimeCheck = result.checks[0];
+      expect(runtimeCheck.checkId).toBe('runtime-test');
+      expect(runtimeCheck.passed).toBe(true);
+
+      const gateCheck = result.checks[1];
+      expect(gateCheck.checkId).toBe('check-node-next-module-resolution');
+      expect(gateCheck.passed).toBe(true);
+      expect(gateCheck.exitCode).toBe(0);
+    });
+
+    it('projects using CommonJS or bundler are NOT subjected to the NodeNext-only rule', async () => {
+      const files: Record<string, string> = {
+        'package.json': JSON.stringify({ type: 'commonjs' }),
+        'tsconfig.json': JSON.stringify({
+          compilerOptions: { moduleResolution: 'bundler' },
+        }),
+        'src/index.ts': `import { helper } from './helper';`, // Extensionless is normal in bundler/CJS
+      };
+
+      const executor = new FakeCommandExecutor();
+      const engine = new VerificationEngine({
+        executor,
+        readFile: async (p) => files[p] ?? null,
+      });
+
+      const plan: VerificationPlan = {
+        checks: [{ id: 'runtime-test', name: 'Runtime Acceptance', command: 'node', args: ['--test'] }],
+      };
+
+      const result = await engine.verify(plan);
+
+      expect(result.status).toBe('VERIFIED');
+      expect(result.checks).toHaveLength(1);
+      expect(result.checks[0].checkId).toBe('runtime-test');
+      // No NodeNext gate was run
+      expect(result.checks.some((c) => c.checkId === 'check-node-next-module-resolution')).toBe(false);
+    });
+
+    it('fails closed when repository configuration cannot be read or is corrupt', async () => {
+      const files: Record<string, string> = {
+        'package.json': '{ "type": "module", broken-json',
+      };
+
+      const executor = new FakeCommandExecutor();
+      const engine = new VerificationEngine({
+        executor,
+        readFile: async (p) => files[p] ?? null,
+      });
+
+      const plan: VerificationPlan = {
+        checks: [{ id: 'runtime-test', name: 'Runtime Acceptance', command: 'node', args: ['--test'] }],
+      };
+
+      const result = await engine.verify(plan);
+
+      // Must fail closed because repository configuration cannot be read
+      expect(result.status).toBe('FAILED');
+      const gateCheck = result.checks.find((c) => c.checkId === 'check-node-next-module-resolution');
+      expect(gateCheck).toBeDefined();
+      expect(gateCheck?.passed).toBe(false);
+      expect(gateCheck?.exitCode).toBe(1);
+      expect(gateCheck?.stderr).toContain('repository configuration could not be read');
+    });
+
+    it('optional check failure does not fail overall verification when all required checks pass', async () => {
+      const executor = new FakeCommandExecutor();
+      executor.setResponseForCommand('node', {
+        exitCode: 0,
+        signal: null,
+        stdout: 'All acceptance tests passed',
+        stderr: '',
+        timedOut: false,
+      });
+      executor.setResponseForCommand('npm', {
+        exitCode: 1,
+        signal: null,
+        stdout: '',
+        stderr: 'Code style warning',
+        timedOut: false,
+      });
+
+      const engine = new VerificationEngine({ executor });
+      const plan: VerificationPlan = {
+        checks: [
+          { id: 'acceptance', name: 'Acceptance Tests', command: 'node', args: ['--test'], optional: false },
+          { id: 'linter', name: 'Optional Linter', command: 'npm', args: ['run', 'lint'], optional: true },
+        ],
+      };
+
+      const result = await engine.verify(plan);
+
+      expect(result.status).toBe('VERIFIED');
+      expect(result.checks).toHaveLength(2);
+      expect(result.checks[0].passed).toBe(true);
+      expect(result.checks[1].passed).toBe(false);
+      expect(result.checks[1].optional).toBe(true);
+    });
+  });
 });

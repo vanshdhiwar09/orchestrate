@@ -12,12 +12,20 @@
     "build": "tsc -b",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "benchmark:preflight": "node --experimental-strip-types scripts/benchmark-preflight.ts"
+    "benchmark:preflight": "node --experimental-strip-types scripts/benchmark-preflight.ts",
+    "engine:dev": "node --experimental-strip-types scripts/start-engine.ts",
+    "seed": "node --experimental-strip-types scripts/seed-run4-data.ts",
+    "smoke:test": "node --experimental-strip-types deploy/smoke-test.ts",
+    "web:dev": "vite apps/web",
+    "web:build": "vite build apps/web"
   },
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^26.6.3",
     "typescript": "^7.0.2",
     "vitest": "^5.0.2"
+  },
+  "engines": {
+    "node": ">=22.8.0"
   }
 }

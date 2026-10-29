@@ -29,6 +29,24 @@ export class ContextSerializer {
     lines.push('  </evidence_hierarchy_rule>');
 
     // ------------------------------------------------------------------------
+    // Environment Conventions
+    // ------------------------------------------------------------------------
+    if (context.environmentConventions && context.environmentConventions.items.length > 0) {
+      lines.push('  <environment_conventions>');
+      for (const item of context.environmentConventions.items) {
+        const provAttr = ` provenance="${escapeXml(item.provenance)}"`;
+        const natureAttr = ` nature="${escapeXml(item.nature)}"`;
+        const locAttr = item.sourceLocation ? ` location="${escapeXml(item.sourceLocation)}"` : '';
+        lines.push(
+          `    <convention key="${escapeXml(item.key)}"${natureAttr}${provAttr}${locAttr}>${escapeXml(
+            item.value
+          )}</convention>`
+        );
+      }
+      lines.push('  </environment_conventions>');
+    }
+
+    // ------------------------------------------------------------------------
     // Architectural Decisions
     // ------------------------------------------------------------------------
     if (context.decisions.length > 0) {

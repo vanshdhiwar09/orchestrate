@@ -25,6 +25,10 @@ export interface ExecuteCommandOptions {
    * Defaults to 30_000 (30 seconds).
    */
   timeoutMs?: number;
+  /**
+   * Optional AbortSignal to cancel the subprocess.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ExecuteCommandResult {

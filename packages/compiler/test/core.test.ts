@@ -203,6 +203,72 @@ describe('ContextCompilerCore', () => {
     expect(keys).not.toContain('auth.unverified_claim');
   });
 
+  it('admits only the current revision per fact key and never compiles superseded VERIFIED revisions', () => {
+    const snapshot = createMockSnapshot({
+      request: {
+        projectId: 'proj-1',
+        targetTaskId: 'task-target-1',
+        tags: ['auth'],
+      },
+      projectFacts: [
+        // 1. Older VERIFIED revision superseded by a newer CLAIMED revision -> must be EXCLUDED
+        {
+          key: 'global.port',
+          value: '3000',
+          provenance: 'CODE',
+          status: 'VERIFIED',
+          recordedAt: '2026-09-30T09:00:00.000Z',
+        },
+        {
+          key: 'global.port',
+          value: '8080',
+          provenance: 'AGENT',
+          status: 'CLAIMED',
+          recordedAt: '2026-09-30T09:10:00.000Z',
+        },
+        // 2. Older VERIFIED revision superseded by a newer UNVERIFIED revision -> must be EXCLUDED
+        {
+          key: 'auth.mode',
+          value: 'jwt',
+          provenance: 'CODE',
+          status: 'VERIFIED',
+          recordedAt: '2026-09-30T09:00:00.000Z',
+        },
+        {
+          key: 'auth.mode',
+          value: 'session-cookie',
+          provenance: 'HUMAN',
+          status: 'UNVERIFIED',
+          recordedAt: '2026-09-30T09:15:00.000Z',
+        },
+        // 3. Multiple VERIFIED revisions -> only the latest revision is admitted
+        {
+          key: 'global.runtime',
+          value: 'Node 18',
+          provenance: 'SYSTEM',
+          status: 'VERIFIED',
+          recordedAt: '2026-09-30T08:00:00.000Z',
+        },
+        {
+          key: 'global.runtime',
+          value: 'Node 22 LTS',
+          provenance: 'CODE',
+          status: 'VERIFIED',
+          recordedAt: '2026-09-30T09:20:00.000Z',
+        },
+      ],
+    });
+
+    const compiled = ContextCompilerCore.compile(snapshot);
+    expect(compiled.facts).toHaveLength(1);
+    expect(compiled.facts[0]).toEqual({
+      key: 'global.runtime',
+      value: 'Node 22 LTS',
+      provenance: 'CODE',
+      status: 'VERIFIED',
+    });
+  });
+
   it('enforces budgeting limits and flags truncation', () => {
     const manyDecisions = Array.from({ length: 25 }, (_, i) => ({
       id: `dec-${String(i).padStart(2, '0')}`,

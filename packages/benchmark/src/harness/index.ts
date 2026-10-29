@@ -15,3 +15,8 @@ export * from './integrity-guard.js';
 export * from './trial-state-machine.js';
 export * from './trial-runner.js';
 export * from './context-derivation.js';
+export * from './budget-guard.js';
+export * from './result-store.js';
+export * from './reporter.js';
+export * from './interruption-handler.js';
+export * from './session-runner.js';

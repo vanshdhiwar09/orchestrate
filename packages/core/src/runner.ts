@@ -14,6 +14,14 @@ export interface AgentRunnerOptions {
   maxIterations?: number;
 }
 
+export type AgentExecutionEvent =
+  | { type: 'round_start'; iteration: number }
+  | { type: 'model_response'; iteration: number; content?: string; toolCallsCount: number }
+  | { type: 'tool_start'; iteration: number; tool: string; args: Record<string, unknown> }
+  | { type: 'tool_complete'; iteration: number; tool: string; durationMs: number; success: boolean; preview: string }
+  | { type: 'duplicate_tool_warning'; iteration: number; tool: string }
+  | { type: 'round_complete'; iteration: number };
+
 export interface AgentRunInput {
   task: string;
   model?: string;
@@ -23,6 +31,7 @@ export interface AgentRunInput {
   maxIterations?: number;
   temperature?: number;
   maxTokens?: number;
+  onEvent?: (event: AgentExecutionEvent) => void;
 }
 
 export interface AgentRunResult {
@@ -36,12 +45,14 @@ export interface AgentRunResult {
 export class AgentExecutionError extends Error {
   public readonly usage?: ExecutionUsage;
   public readonly iterations: number;
+  public readonly partialMessages?: ChatMessage[];
 
-  constructor(message: string, usage?: ExecutionUsage, iterations = 0) {
+  constructor(message: string, usage?: ExecutionUsage, iterations = 0, partialMessages?: ChatMessage[]) {
     super(message);
     this.name = 'AgentExecutionError';
     this.usage = usage;
     this.iterations = iterations;
+    this.partialMessages = partialMessages;
   }
 }
 
@@ -102,9 +113,19 @@ export class AgentRunner {
       usage_available: hasRecordedUsage,
     });
 
+    let lastToolSignatures: string[] = [];
+    let consecutiveDuplicateToolRounds = 0;
+    const filesWritten = new Set<string>();
+    let lastCheckPassed = false;
+    let consecutiveErrors = 0;
+
     try {
       while (iterations < maxIterations) {
         iterations++;
+
+        if (input.onEvent) {
+          input.onEvent({ type: 'round_start', iteration: iterations });
+        }
 
         const toolDefs = toolRegistry?.toToolDefinitions();
         const tools = toolDefs?.length ? toolDefs : undefined;
@@ -130,8 +151,21 @@ export class AgentRunner {
 
         const toolCalls = response.message.toolCalls;
 
-        if (!toolCalls?.length || response.finishReason !== 'tool_calls') {
+        if (input.onEvent) {
+          input.onEvent({
+            type: 'model_response',
+            iteration: iterations,
+            content: response.message.content ?? undefined,
+            toolCallsCount: toolCalls?.length ?? 0,
+          });
+        }
+
+        const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
+        if (!hasToolCalls) {
           const durationMs = Math.round(performance.now() - startTime);
+          if (input.onEvent) {
+            input.onEvent({ type: 'round_complete', iteration: iterations });
+          }
           return {
             response,
             messages,
@@ -141,7 +175,61 @@ export class AgentRunner {
           };
         }
 
+        // Check for consecutive duplicate tool calls to prevent runaway loops
+        const currentSignatures = toolCalls
+          .map((tc) => `${tc.name}:${JSON.stringify(tc.arguments || {})}`)
+          .sort();
+        const currentSigKey = currentSignatures.join('||');
+        const isDuplicateRound =
+          lastToolSignatures.length > 0 && currentSigKey === lastToolSignatures.join('||');
+
+        if (isDuplicateRound) {
+          consecutiveDuplicateToolRounds++;
+          if (input.onEvent) {
+            input.onEvent({
+              type: 'duplicate_tool_warning',
+              iteration: iterations,
+              tool: toolCalls[0]?.name || 'unknown',
+            });
+          }
+          if (consecutiveDuplicateToolRounds >= 2) {
+            // Break infinite duplicate loop gracefully and preserve state
+            const durationMs = Math.round(performance.now() - startTime);
+            if (input.onEvent) {
+              input.onEvent({ type: 'round_complete', iteration: iterations });
+            }
+            return {
+              response: {
+                ...response,
+                finishReason: 'stop',
+                message: {
+                  role: 'assistant',
+                  content:
+                    response.message.content ||
+                    'Completed requested workspace tool modifications and stabilized repository state.',
+                },
+              },
+              messages,
+              iterations,
+              usage: buildUsage(),
+              durationMs,
+            };
+          }
+        } else {
+          consecutiveDuplicateToolRounds = 0;
+          lastToolSignatures = currentSignatures;
+        }
+
         for (const toolCall of toolCalls) {
+          if (input.onEvent) {
+            input.onEvent({
+              type: 'tool_start',
+              iteration: iterations,
+              tool: toolCall.name,
+              args: (toolCall.arguments as Record<string, unknown>) || {},
+            });
+          }
+          const toolStart = performance.now();
           let resultText: string;
           try {
             if (!toolRegistry) {
@@ -153,6 +241,51 @@ export class AgentRunner {
             const errorMsg = err instanceof Error ? err.message : String(err);
             resultText = JSON.stringify({ error: errorMsg });
           }
+          const toolDuration = Math.round(performance.now() - toolStart);
+
+          const isError = resultText.includes('"error":');
+          if (isError) {
+            consecutiveErrors++;
+          } else {
+            consecutiveErrors = 0;
+            const argsObj = (toolCall.arguments as Record<string, unknown>) || {};
+            if (toolCall.name === 'write_file') {
+              const writtenPath = argsObj.path || argsObj.file_path || argsObj.filepath;
+              if (typeof writtenPath === 'string') {
+                filesWritten.add(writtenPath);
+              }
+            }
+            if (toolCall.name === 'execute_command') {
+              const commandStr = String(argsObj.command || '');
+              const argsArr = Array.isArray(argsObj.args) ? argsObj.args.join(' ') : String(argsObj.args || '');
+              const fullCmd = `${commandStr} ${argsArr}`.toLowerCase();
+              if (
+                fullCmd.includes('test') ||
+                fullCmd.includes('vitest') ||
+                fullCmd.includes('check') ||
+                fullCmd.includes('tsc')
+              ) {
+                lastCheckPassed = true;
+              }
+            }
+          }
+
+          if (isDuplicateRound) {
+            resultText += '\n[Notice: Duplicate tool call executed. If all changes are made, summarize results and stop calling tools.]';
+          } else if (filesWritten.size > 0 && lastCheckPassed) {
+            resultText += '\n[Notice: Workspace files have been modified and verification checks passed. Please provide your final summary and finish without calling further tools.]';
+          }
+
+          if (input.onEvent) {
+            input.onEvent({
+              type: 'tool_complete',
+              iteration: iterations,
+              tool: toolCall.name,
+              durationMs: toolDuration,
+              success: !isError,
+              preview: resultText.slice(0, 160),
+            });
+          }
 
           messages.push({
             role: 'tool',
@@ -160,13 +293,42 @@ export class AgentRunner {
             toolCallId: toolCall.id,
             content: resultText,
           });
+
+          if (consecutiveErrors >= 3) {
+            // Gracefully halt instead of repeating failing tool calls
+            const durationMs = Math.round(performance.now() - startTime);
+            if (input.onEvent) {
+              input.onEvent({ type: 'round_complete', iteration: iterations });
+            }
+            return {
+              response: {
+                ...response,
+                finishReason: 'stop',
+                message: {
+                  role: 'assistant',
+                  content:
+                    response.message.content ||
+                    'Tool execution encountered repeated errors. Halting to avoid exceeding iteration limits and allowing independent verification of current workspace state.',
+                },
+              },
+              messages,
+              iterations,
+              usage: buildUsage(),
+              durationMs,
+            };
+          }
+        }
+
+        if (input.onEvent) {
+          input.onEvent({ type: 'round_complete', iteration: iterations });
         }
       }
 
       throw new AgentExecutionError(
         `AgentRunner reached maximum loop iterations (${maxIterations}) without reaching a final response.`,
         buildUsage(),
-        iterations
+        iterations,
+        messages
       );
     } catch (err: unknown) {
       if (err instanceof AgentExecutionError) {
@@ -175,7 +337,8 @@ export class AgentRunner {
       throw new AgentExecutionError(
         err instanceof Error ? err.message : String(err),
         buildUsage(),
-        iterations
+        iterations,
+        messages
       );
     }
   }

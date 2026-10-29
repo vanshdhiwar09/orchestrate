@@ -15,5 +15,8 @@
     "@orchestrate/model": "*",
     "@orchestrate/verification": "*",
     "@orchestrate/workspace": "*"
+  },
+  "engines": {
+    "node": ">=22.8.0"
   }
 }

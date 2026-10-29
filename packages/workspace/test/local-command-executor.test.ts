@@ -87,6 +87,13 @@ describe('LocalCommandExecutor', () => {
     await expect(executor.execute('curl', [])).rejects.toThrow(
       'Command not allowed: "curl"'
     );
+    // Actionable alternatives for common file-inspection utilities
+    await expect(executor.execute('ls', [])).rejects.toThrow(
+      'Command not allowed: "ls". Allowed executables: node, npm, npx, tsc, git. To list files, run "git" with args ["ls-files"] or ["status"].'
+    );
+    await expect(executor.execute('cat', [])).rejects.toThrow(
+      'Command not allowed: "cat". Allowed executables: node, npm, npx, tsc, git. To inspect file contents, use the "read_file" tool.'
+    );
   });
 
   it('7. cwd traversal via ".." is rejected', async () => {

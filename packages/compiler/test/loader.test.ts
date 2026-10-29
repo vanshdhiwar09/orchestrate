@@ -111,4 +111,41 @@ describe('ContextLoader & ContextCompiler', () => {
 
     expect(snapshot.git).toBeNull();
   });
+
+  it('loads environment conventions via readFile or Brain facts', async () => {
+    const brain = new MemoryProjectBrain();
+    await brain.createProject({ id: 'proj-env', name: 'Env Project' });
+    await brain.createTask({
+      id: 'task-env-1',
+      projectId: 'proj-env',
+      title: 'Task with Env',
+      description: 'Desc',
+    });
+
+    const files: Record<string, string> = {
+      'package.json': JSON.stringify({ type: 'module' }),
+      'tsconfig.json': JSON.stringify({
+        compilerOptions: { moduleResolution: 'NodeNext' },
+      }),
+    };
+
+    const loader = new ContextLoader({
+      brain,
+      readFile: async (p) => files[p] ?? null,
+    });
+
+    const snapshot = await loader.load({
+      projectId: 'proj-env',
+      targetTaskId: 'task-env-1',
+    });
+
+    expect(snapshot.environmentConventions).toBeDefined();
+    expect(snapshot.environmentConventions?.items).toHaveLength(2);
+    expect(
+      snapshot.environmentConventions?.items.some((i) => i.key === 'module_system')
+    ).toBe(true);
+    expect(
+      snapshot.environmentConventions?.items.some((i) => i.key === 'module_resolution')
+    ).toBe(true);
+  });
 });

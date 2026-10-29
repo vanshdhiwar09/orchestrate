@@ -1,19 +1,26 @@
+import { computeSourceSnapshot } from '@orchestrate/verification';
 import type {
   AddProjectFactInput,
   BrainStore,
   CreateProjectInput,
   CreateTaskInput,
 } from './brain.js';
-import type {
-  Decision,
-  Handoff,
-  Project,
-  ProjectFact,
-  Task,
-  TaskAttempt,
-  TaskMetrics,
-  TaskTrustState,
-  VerificationRecord,
+import {
+  type Decision,
+  type DeriveTrustStateOptions,
+  type Handoff,
+  type Project,
+  type ProjectFact,
+  PromotionError,
+  type PromoteTaskOptions,
+  type PromotionResult,
+  SourceFreshnessError,
+  type SourceSnapshotIdentity,
+  type Task,
+  type TaskAttempt,
+  type TaskMetrics,
+  type TaskTrustState,
+  type VerificationRecord,
 } from './types.js';
 
 export class MemoryProjectBrain implements BrainStore {
@@ -44,11 +51,14 @@ export class MemoryProjectBrain implements BrainStore {
       throw new Error('Project name must be a non-empty string.');
     }
 
+    const ownerId = typeof input.ownerId === 'string' && input.ownerId.trim() ? input.ownerId.trim() : undefined;
+
     const project: Project = {
       id,
       name: input.name.trim(),
       facts: [],
       createdAt: input.createdAt ?? new Date().toISOString(),
+      ...(ownerId ? { ownerId } : {}),
     };
 
     this.projects.set(id, project);
@@ -67,6 +77,19 @@ export class MemoryProjectBrain implements BrainStore {
       ...project,
       facts: projectFacts.map((f) => ({ ...f })),
     };
+  }
+
+  async listProjects(ownerId?: string): Promise<Project[]> {
+    return [...this.projects.values()]
+      .filter((project) => {
+        if (!ownerId || typeof ownerId !== 'string' || !ownerId.trim()) return true;
+        return project.ownerId === ownerId.trim();
+      })
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+      .map((project) => ({
+        ...project,
+        facts: (this.facts.get(project.id) ?? []).map((f) => ({ ...f })),
+      }));
   }
 
   // ── Fact operations ─────────────────────────────────────────────────────────
@@ -424,6 +447,52 @@ export class MemoryProjectBrain implements BrainStore {
       );
     }
 
+    // Invariant: VERIFIED status strictly requires valid, passing required checks
+    if (record.result.status === 'VERIFIED') {
+      if (!Array.isArray(record.result.checks) || record.result.checks.length === 0) {
+        throw new Error(
+          'Cannot record verification status "VERIFIED" without verification checks.'
+        );
+      }
+      const requiredChecks = record.result.checks.filter(
+        (c) => (c as any)?.optional !== true
+      );
+      if (requiredChecks.length === 0) {
+        throw new Error(
+          'Cannot record verification status "VERIFIED" without at least one required check.'
+        );
+      }
+      for (const c of requiredChecks) {
+        if (
+          !c ||
+          typeof c !== 'object' ||
+          c.passed !== true ||
+          c.exitCode !== 0 ||
+          c.timedOut ||
+          c.signal !== null
+        ) {
+          throw new Error(
+            `Cannot record verification status "VERIFIED" when required check "${c?.checkId ?? 'unknown'}" failed or is invalid.`
+          );
+        }
+      }
+    }
+
+    if (record.sourceSnapshot !== undefined) {
+      if (
+        !record.sourceSnapshot ||
+        typeof record.sourceSnapshot !== 'object' ||
+        typeof record.sourceSnapshot.fingerprint !== 'string' ||
+        record.sourceSnapshot.fingerprint.trim() === '' ||
+        typeof record.sourceSnapshot.capturedAt !== 'string' ||
+        record.sourceSnapshot.capturedAt.trim() === ''
+      ) {
+        throw new Error(
+          'VerificationRecord sourceSnapshot must be a valid object with non-empty "fingerprint" and "capturedAt".'
+        );
+      }
+    }
+
     const cleanRecord: VerificationRecord = {
       id: rid,
       taskId: tid,
@@ -438,6 +507,15 @@ export class MemoryProjectBrain implements BrainStore {
         totalDurationMs: record.result.totalDurationMs,
       },
       recordedAt: record.recordedAt ?? new Date().toISOString(),
+      sourceSnapshot: record.sourceSnapshot
+        ? {
+            fingerprint: record.sourceSnapshot.fingerprint,
+            capturedAt: record.sourceSnapshot.capturedAt,
+            fileCount: record.sourceSnapshot.fileCount,
+            commitSha: record.sourceSnapshot.commitSha,
+            dirty: record.sourceSnapshot.dirty,
+          }
+        : undefined,
     };
 
     this.verificationRecords.set(attemptKey, cleanRecord);
@@ -453,12 +531,22 @@ export class MemoryProjectBrain implements BrainStore {
   ): Promise<VerificationRecord | null> {
     const key = `${taskId.trim()}:${attemptNumber}`;
     const r = this.verificationRecords.get(key);
-    return r ? { ...r } : null;
+    return r
+      ? {
+          ...r,
+          sourceSnapshot: r.sourceSnapshot ? { ...r.sourceSnapshot } : undefined,
+        }
+      : null;
   }
 
   async getVerificationRecordById(id: string): Promise<VerificationRecord | null> {
     const r = this.verificationRecordsById.get(id.trim());
-    return r ? { ...r } : null;
+    return r
+      ? {
+          ...r,
+          sourceSnapshot: r.sourceSnapshot ? { ...r.sourceSnapshot } : undefined,
+        }
+      : null;
   }
 
   private getVerificationRecordsForTask(taskId: string): VerificationRecord[] {
@@ -599,7 +687,21 @@ export class MemoryProjectBrain implements BrainStore {
     this.blockedTasks.add(tid);
   }
 
-  async deriveTaskTrustState(taskId: string): Promise<TaskTrustState> {
+  async unblockTask(taskId: string): Promise<void> {
+    if (typeof taskId !== 'string' || taskId.trim() === '') {
+      throw new Error('Task ID must be a non-empty string.');
+    }
+    const tid = taskId.trim();
+    if (!this.tasks.has(tid)) {
+      throw new Error(`Task "${tid}" not found.`);
+    }
+    this.blockedTasks.delete(tid);
+  }
+
+  async deriveTaskTrustState(
+    taskId: string,
+    options?: DeriveTrustStateOptions
+  ): Promise<TaskTrustState> {
     if (typeof taskId !== 'string' || taskId.trim() === '') {
       throw new Error('Task ID must be a non-empty string.');
     }
@@ -629,7 +731,58 @@ export class MemoryProjectBrain implements BrainStore {
     // Check verification of the latest attempt
     const latestVerification = this.verificationRecords.get(`${tid}:${highestAttempt}`);
     if (latestVerification) {
-      return latestVerification.result.status === 'VERIFIED' ? 'VERIFIED' : 'FAILED';
+      if (latestVerification.result?.status === 'VERIFIED') {
+        const checks = latestVerification.result.checks;
+        if (!Array.isArray(checks) || checks.length === 0) {
+          return 'FAILED'; // Fail closed: missing or empty checks
+        }
+        const requiredChecks = checks.filter((c) => (c as any)?.optional !== true);
+        if (requiredChecks.length === 0) {
+          return 'FAILED'; // Fail closed: no required checks
+        }
+        const allRequiredValidAndPassed = requiredChecks.every((c) => {
+          if (!c || typeof c !== 'object') return false;
+          if (typeof c.checkId !== 'string' || !c.checkId) return false;
+          if (c.passed !== true) return false;
+          if (c.exitCode !== 0) return false;
+          if (c.timedOut) return false;
+          if (c.signal !== null) return false;
+          return true;
+        });
+
+        if (!allRequiredValidAndPassed) {
+          return 'FAILED';
+        }
+
+        // Source freshness validation if requested
+        if (options?.workspaceRoot || options?.currentFingerprint || options?.requireFreshness) {
+          const boundFingerprint = latestVerification.sourceSnapshot?.fingerprint;
+          if (!boundFingerprint || typeof boundFingerprint !== 'string') {
+            return 'FAILED'; // Legacy or missing snapshot fails closed
+          }
+
+          if (options.currentFingerprint) {
+            if (options.currentFingerprint !== boundFingerprint) {
+              return 'FAILED';
+            }
+          }
+
+          if (options.workspaceRoot) {
+            try {
+              const computeFn = options.computeSnapshotFn ?? computeSourceSnapshot;
+              const currentSnapshot = await computeFn(options.workspaceRoot);
+              if (currentSnapshot.fingerprint !== boundFingerprint) {
+                return 'FAILED';
+              }
+            } catch {
+              return 'FAILED'; // Error computing snapshot fails closed
+            }
+          }
+        }
+
+        return 'VERIFIED';
+      }
+      return 'FAILED';
     }
 
     // If latest attempt has a handoff but no verification yet
@@ -639,6 +792,141 @@ export class MemoryProjectBrain implements BrainStore {
     }
 
     return 'UNVERIFIED';
+  }
+
+  async promoteTask(taskId: string, options: PromoteTaskOptions): Promise<PromotionResult> {
+    if (typeof taskId !== 'string' || taskId.trim() === '') {
+      throw new Error('Task ID must be a non-empty string.');
+    }
+    const tid = taskId.trim();
+    if (!this.tasks.has(tid)) {
+      throw new PromotionError('TASK_NOT_FOUND', tid, `Task "${tid}" not found.`);
+    }
+
+    if (this.blockedTasks.has(tid)) {
+      throw new PromotionError(
+        'TASK_BLOCKED',
+        tid,
+        `Task "${tid}" is in BLOCKED_NEEDS_HUMAN state.`
+      );
+    }
+
+    if (!options || typeof options !== 'object' || !options.workspaceRoot?.trim()) {
+      throw new Error('PromoteTaskOptions requires a valid non-empty workspaceRoot.');
+    }
+
+    const handoffs = this.getHandoffsForTask(tid);
+    const verifications = this.getVerificationRecordsForTask(tid);
+
+    if (handoffs.length === 0 && verifications.length === 0) {
+      throw new PromotionError('TASK_NOT_VERIFIED', tid, `Task "${tid}" has no attempts.`);
+    }
+
+    const attemptNumbers = new Set<number>();
+    for (const h of handoffs) attemptNumbers.add(h.attemptNumber);
+    for (const v of verifications) attemptNumbers.add(v.attemptNumber);
+
+    const highestAttempt = Math.max(...attemptNumbers);
+
+    if (
+      options.expectedAttemptNumber !== undefined &&
+      options.expectedAttemptNumber !== highestAttempt
+    ) {
+      throw new PromotionError(
+        'ATTEMPT_MISMATCH',
+        tid,
+        `Cannot promote task "${tid}": expected attempt ${options.expectedAttemptNumber}, but latest attempt is ${highestAttempt}.`
+      );
+    }
+
+    const latestVerification = this.verificationRecords.get(`${tid}:${highestAttempt}`);
+    if (!latestVerification || latestVerification.result?.status !== 'VERIFIED') {
+      throw new PromotionError(
+        'TASK_NOT_VERIFIED',
+        tid,
+        `Cannot promote task "${tid}": latest attempt ${highestAttempt} is not verified.`
+      );
+    }
+
+    const checks = latestVerification.result.checks;
+    if (!Array.isArray(checks) || checks.length === 0) {
+      throw new PromotionError(
+        'TASK_NOT_VERIFIED',
+        tid,
+        `Cannot promote task "${tid}": verification checks are missing.`
+      );
+    }
+    const requiredChecks = checks.filter((c) => (c as any)?.optional !== true);
+    if (requiredChecks.length === 0) {
+      throw new PromotionError(
+        'TASK_NOT_VERIFIED',
+        tid,
+        `Cannot promote task "${tid}": no required verification checks.`
+      );
+    }
+    const allRequiredValidAndPassed = requiredChecks.every((c) => {
+      if (!c || typeof c !== 'object') return false;
+      if (typeof c.checkId !== 'string' || !c.checkId) return false;
+      if (c.passed !== true) return false;
+      if (c.exitCode !== 0) return false;
+      if (c.timedOut) return false;
+      if (c.signal !== null) return false;
+      return true;
+    });
+
+    if (!allRequiredValidAndPassed) {
+      throw new PromotionError(
+        'TASK_NOT_VERIFIED',
+        tid,
+        `Cannot promote task "${tid}": required verification checks failed.`
+      );
+    }
+
+    const boundSnapshot = latestVerification.sourceSnapshot;
+    if (!boundSnapshot || !boundSnapshot.fingerprint) {
+      throw new SourceFreshnessError(
+        'SOURCE_SNAPSHOT_MISSING',
+        tid,
+        highestAttempt,
+        undefined,
+        undefined,
+        `Cannot promote task "${tid}": verification record for attempt ${highestAttempt} lacks source snapshot identity.`
+      );
+    }
+
+    let currentSnapshot: SourceSnapshotIdentity;
+    try {
+      const computeFn = options.computeSnapshotFn ?? computeSourceSnapshot;
+      currentSnapshot = await computeFn(options.workspaceRoot);
+    } catch (err: unknown) {
+      throw new SourceFreshnessError(
+        'SOURCE_FINGERPRINT_FAILED',
+        tid,
+        highestAttempt,
+        boundSnapshot.fingerprint,
+        undefined,
+        `Cannot promote task "${tid}": failed to compute current workspace source snapshot: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+
+    if (currentSnapshot.fingerprint !== boundSnapshot.fingerprint) {
+      throw new SourceFreshnessError(
+        'SOURCE_FRESHNESS_MISMATCH',
+        tid,
+        highestAttempt,
+        boundSnapshot.fingerprint,
+        currentSnapshot.fingerprint,
+        `Source freshness violation: workspace source has changed since verification attempt ${highestAttempt} was completed. Expected fingerprint "${boundSnapshot.fingerprint}", got "${currentSnapshot.fingerprint}". Verification must be rerun.`
+      );
+    }
+
+    return {
+      taskId: tid,
+      attemptNumber: highestAttempt,
+      status: 'VERIFIED',
+      sourceSnapshot: boundSnapshot,
+      promotedAt: new Date().toISOString(),
+    };
   }
 
   async getTaskHistory(taskId: string): Promise<TaskAttempt[]> {

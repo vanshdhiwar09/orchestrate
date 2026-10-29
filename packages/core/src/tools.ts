@@ -46,7 +46,7 @@ export function createReadFileTool(
   return {
     name: 'read_file',
     description:
-      'Reads the text contents of a file from the workspace given its relative path.',
+      'Reads the full text contents of a file from the workspace given its relative path (use this instead of cat or specialized view tools).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -58,12 +58,14 @@ export function createReadFileTool(
       required: ['path'],
     },
     async execute(input: ReadFileInput): Promise<ReadFileResult> {
-      if (!input || typeof input.path !== 'string' || input.path.trim() === '') {
+      const rawPath = input?.path ?? (input as any)?.file_path ?? (input as any)?.filepath;
+      if (!rawPath || typeof rawPath !== 'string' || rawPath.trim() === '') {
         throw new Error('read_file requires a non-empty string "path" parameter.');
       }
-      const content = await workspace.readFile(input.path);
+      const normalizedPath = rawPath.trim().replace(/^(\.\/|\/|\\)+/, '');
+      const content = await workspace.readFile(normalizedPath);
       return {
-        path: input.path,
+        path: normalizedPath,
         content,
       };
     },
@@ -86,7 +88,8 @@ export function createWriteFileTool(
   return {
     name: 'write_file',
     description:
-      'Writes text content to a file in the workspace given its relative path.',
+      'Creates or overwrites a file in the workspace with the specified text content given its relative path. ' +
+      'This is the primary tool for creating and modifying source code files (specialized text editors or patch tools like str_replace_editor are NOT supported; use write_file for all file modifications).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -102,15 +105,18 @@ export function createWriteFileTool(
       required: ['path', 'content'],
     },
     async execute(input: WriteFileInput): Promise<WriteFileResult> {
-      if (!input || typeof input.path !== 'string' || input.path.trim() === '') {
+      const rawPath = input?.path ?? (input as any)?.file_path ?? (input as any)?.filepath;
+      if (!rawPath || typeof rawPath !== 'string' || rawPath.trim() === '') {
         throw new Error('write_file requires a non-empty string "path" parameter.');
       }
-      if (typeof input.content !== 'string') {
+      const rawContent = input?.content ?? (input as any)?.code ?? (input as any)?.text;
+      if (typeof rawContent !== 'string') {
         throw new Error('write_file requires a string "content" parameter.');
       }
-      await workspace.writeFile(input.path, input.content);
+      const normalizedPath = rawPath.trim().replace(/^(\.\/|\/|\\)+/, '');
+      await workspace.writeFile(normalizedPath, rawContent);
       return {
-        path: input.path,
+        path: normalizedPath,
         success: true,
       };
     },
@@ -139,7 +145,10 @@ export function createExecuteCommandTool(
   return {
     name: 'execute_command',
     description:
-      'Executes an allowed command (node, npm, npx, tsc, git) in the workspace. ' +
+      'Executes an allowed CLI executable (node, npm, npx, tsc, git) in the workspace. ' +
+      'Shell built-ins and Unix utilities (e.g. ls, dir, find, cat, cd) are NOT supported. ' +
+      'To inspect files and directories, run "git" with args ["ls-files"] or ["status"], or use the read_file tool. ' +
+      'The "args" parameter is required: pass [] if no arguments are needed. ' +
       'Returns exit code, stdout, stderr, and whether it timed out. ' +
       'Non-zero exit codes are returned as structured results, not exceptions.',
     inputSchema: {
@@ -152,7 +161,7 @@ export function createExecuteCommandTool(
         args: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Arguments to pass to the command.',
+          description: 'Arguments to pass to the command. Pass [] if no arguments are needed.',
         },
         cwd: {
           type: 'string',
@@ -164,22 +173,39 @@ export function createExecuteCommandTool(
     },
     async execute(input: ExecuteCommandInput): Promise<ExecuteCommandResult> {
       // Tool-boundary validation: model-generated input is untrusted.
-      if (typeof input?.command !== 'string' || input.command.trim() === '') {
+      if (!input || typeof input.command !== 'string' || input.command.trim() === '') {
         throw new Error('execute_command requires a non-empty string "command" parameter.');
       }
+
       if (!Array.isArray(input.args)) {
-        throw new Error('execute_command requires an array "args" parameter.');
+        throw new Error(
+          'execute_command requires an array "args" parameter. Pass [] if no arguments are needed.'
+        );
       }
       for (const arg of input.args) {
         if (typeof arg !== 'string') {
           throw new Error('execute_command: each element of "args" must be a string.');
         }
       }
+
+      let command = input.command.trim();
+      let args: string[] = [];
+
+      if (command.includes(' ')) {
+        const parts = command.split(/\s+/);
+        command = parts[0];
+        args = [...parts.slice(1), ...(input.args as string[])];
+      } else {
+        args = input.args as string[];
+      }
+
+
+
       if (input.cwd !== undefined && typeof input.cwd !== 'string') {
         throw new Error('execute_command: "cwd", if provided, must be a string.');
       }
 
-      const result = await executor.execute(input.command, input.args, {
+      const result = await executor.execute(command, args, {
         cwd: input.cwd,
       });
 

@@ -81,12 +81,13 @@ describe('Benchmark Preflight Suite', () => {
       const summary = await runPreflight({ all: true });
 
       expect(summary.success).toBe(true);
-      expect(summary.reports).toHaveLength(3);
+      expect(summary.reports).toHaveLength(4);
 
       const scenarioIds = summary.reports.map((r) => r.scenarioId);
       expect(scenarioIds).toContain('auth-protected-api');
       expect(scenarioIds).toContain('auth-password-reset');
       expect(scenarioIds).toContain('data-model-feature');
+      expect(scenarioIds).toContain('profile-validation');
 
       for (const report of summary.reports) {
         expect(report.valid).toBe(true);

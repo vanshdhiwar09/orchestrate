@@ -150,7 +150,7 @@ describe('AgentExecutionAdapter', () => {
     expect(evidence.usage.output_tokens).toBe(35);
     expect(evidence.usage.total_tokens).toBe(80);
     expect(evidence.usage.usage_available).toBe(true);
-    expect(evidence.usage.estimated_cost_usd).toBe(0);
+    expect(evidence.usage.estimated_cost_usd).toBeNull();
 
     // Timing captured
     expect(typeof evidence.durationMs).toBe('number');

@@ -10,6 +10,7 @@ export interface VerificationCheck {
   args: string[];
   cwd?: string;
   timeoutMs?: number;
+  optional?: boolean;
 }
 
 /**
@@ -52,6 +53,8 @@ export interface VerificationEvidence {
   verifiedAt: string;
 
   passed: boolean;
+
+  optional?: boolean;
 }
 
 /**
@@ -77,4 +80,7 @@ export interface VerificationResult {
 
 export interface VerificationEngineOptions {
   executor: CommandExecutor;
+  workspaceRoot?: string;
+  readFile?: (path: string) => Promise<string | null>;
+  checkModuleResolution?: boolean;
 }
