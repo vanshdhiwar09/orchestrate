@@ -228,11 +228,11 @@ export function renderLandingPage(): HTMLElement {
               <button type="button" class="landing-btn landing-btn-hero-primary" data-action="open-app" id="landing-hero-get-started">
                 Get started ${ICONS.arrow}
               </button>
-              <button type="button" class="landing-btn landing-btn-hero-demo" data-scroll-to="landing-preview" id="landing-hero-watch-demo">
+              <a href="https://drive.google.com/file/d/1trRBt1jwyZcwi9cSWrrHRki2ZIA__Zi6/view?usp=sharing" target="_blank" rel="noopener noreferrer" class="landing-btn landing-btn-hero-demo" id="landing-hero-watch-demo">
                 ${ICONS.play}
                 <span>Watch demo</span>
                 <span class="demo-pill-time">3 min</span>
-              </button>
+              </a>
             </div>
 
             <!-- 4 Bottom Feature Points (Matching Reference Exactly) -->

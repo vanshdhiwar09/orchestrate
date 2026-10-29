@@ -1,6 +1,24 @@
 # Orchestrate
 
-> **An AI engineering system that coordinates coding agents while maintaining persistent, evidence-backed project state.**
+> **Evidence-Backed AI Engineering System: Coordinating Multi-Agent Coding Teams with Persistent State, Sandboxed Execution, and Independent Verification.**
+
+[![Demo Video](https://img.shields.io/badge/Demo_Video-Watch_Walkthrough-blue?style=for-the-badge&logo=google-drive)](https://drive.google.com/file/d/1trRBt1jwyZcwi9cSWrrHRki2ZIA__Zi6/view?usp=sharing)
+[![Nebius Token Factory](https://img.shields.io/badge/AI_Inference-Nebius_Token_Factory-purple?style=for-the-badge)](https://nebius.com)
+[![NVIDIA Models](https://img.shields.io/badge/NVIDIA-Nemotron--3--Nano-green?style=for-the-badge&logo=nvidia)](https://build.nvidia.com)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Strict_v5-3178C6?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org)
+
+📹 **[Watch the 3-Minute Project Demo Video](https://drive.google.com/file/d/1trRBt1jwyZcwi9cSWrrHRki2ZIA__Zi6/view?usp=sharing)**
+
+---
+
+## 🚀 Overview
+
+**Orchestrate** transforms chaotic, stateless AI coding agent chats into a structured, evidence-backed software engineering workflow. Instead of blind trust, Orchestrate introduces:
+- **Persistent Project Brain:** Durable SQLite knowledge base tracking architectural decisions, facts, and task handoffs.
+- **Independent Verification:** Agent claims are untrusted until independently evaluated by live test and build runners (`VERIFIED` over `CLAIMED`).
+- **Container Sandboxing:** Docker/Podman isolation with non-root privileges, drop-ALL capabilities, and zero network leakage for untrusted code execution.
+- **Multi-Model Orchestration via Nebius Token Factory:** Role-specific models (Planner, Builder, Reviewer, Repairer) powered by high-performance NVIDIA models.
+- **Tenant Isolation & Security:** Cryptographic HMAC-SHA256 JWT auth, opaque IDOR defense, and strict workspace path containment.
 
 ---
 
